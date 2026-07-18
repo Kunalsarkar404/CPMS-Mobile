@@ -1,0 +1,64 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo / Metro
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+
+# generated native folders (Expo prebuild / CNG)
+/ios
+/android
+
+# release / build artifacts
+releases/
+*.apk
+*.aab
+*.ipa
+*.dSYM.zip
+*.jsbundle
+
+# debug / logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.log
+
+# macOS / OS junk
+.DS_Store
+Thumbs.db
+*.pem
+
+# secrets & credentials
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+credentials.json
+
+# typescript / tooling caches
+*.tsbuildinfo
+.cache/
+.turbo/
+coverage/
+.kotlin/
+*.orig.*
+
+# local IDE / agent tooling (keep .vscode for shared editor settings)
+.idea/
+.claude/
+.cursor/
+
+# testing
+*.lcov
