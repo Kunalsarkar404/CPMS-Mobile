@@ -1,6 +1,6 @@
 import { storage } from '@/utils/storage';
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
+export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
 
 const ACCESS_TOKEN_KEY = '@cpms/access_token';
 const REFRESH_TOKEN_KEY = '@cpms/refresh_token';
@@ -58,7 +58,7 @@ export function onSessionExpired(handler: () => void): void {
 
 let refreshPromise: Promise<string | null> | null = null;
 
-async function refreshAccessToken(): Promise<string | null> {
+export async function refreshAccessToken(): Promise<string | null> {
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = (async () => {

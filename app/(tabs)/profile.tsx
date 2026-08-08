@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -13,9 +13,10 @@ import { useRouter } from 'expo-router';
 import AppHeader from '@/components/AppHeader';
 import Avatar from '@/components/Avatar';
 import ConfirmModal from '@/components/ConfirmModal';
+import PullToRefreshControl from '@/components/PullToRefreshControl';
 import Sidebar from '@/components/Sidebar';
 import SmoothScrollView from '@/components/SmoothScrollView';
-import { useAppDispatch, useAppSelector } from '@/hooks';
+import { useAppDispatch, useAppSelector, usePullToRefresh } from '@/hooks';
 import { useSidebarNavigation } from '@/hooks/useSidebarNavigation';
 import {
   cancelAllTrackedNotifications,
@@ -91,36 +92,46 @@ export default function ProfileScreen() {
   const [lineManager, setLineManager] = useState<LineManager | null>(null);
   const [isLoadingManager, setIsLoadingManager] = useState(true);
 
-  useEffect(() => {
+  const loadProfileData = useCallback(async () => {
     if (!staffSession) return;
+
+    const [profileResult, managerResult] = await Promise.allSettled([
+      crewApi.getStaffById(staffSession.staffId),
+      authApi.getLineManager(),
+    ]);
+
+    if (profileResult.status === 'fulfilled') {
+      setStaffProfile(profileResult.value);
+      setProfileError(null);
+    } else {
+      setProfileError(
+        profileResult.reason instanceof Error ? profileResult.reason.message : 'Failed to load profile'
+      );
+    }
+
+    if (managerResult.status === 'fulfilled') {
+      setLineManager(managerResult.value);
+    }
+    // On manager lookup failure, previous state is kept — section just stays empty on first load.
+  }, [staffSession]);
+
+  useEffect(() => {
     let active = true;
-
     (async () => {
-      try {
-        const data = await crewApi.getStaffById(staffSession.staffId);
-        if (active) setStaffProfile(data);
-      } catch (err) {
-        if (active) setProfileError(err instanceof Error ? err.message : 'Failed to load profile');
-      } finally {
-        if (active) setIsLoadingProfile(false);
+      setIsLoadingProfile(true);
+      setIsLoadingManager(true);
+      await loadProfileData();
+      if (active) {
+        setIsLoadingProfile(false);
+        setIsLoadingManager(false);
       }
     })();
-
-    (async () => {
-      try {
-        const manager = await authApi.getLineManager();
-        if (active) setLineManager(manager);
-      } catch {
-        // no line manager assigned, or lookup failed — section just stays empty
-      } finally {
-        if (active) setIsLoadingManager(false);
-      }
-    })();
-
     return () => {
       active = false;
     };
-  }, [staffSession]);
+  }, [loadProfileData]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(loadProfileData);
 
   const profile = {
     name: staffProfile?.Full_Name ?? staffSession?.fullName ?? '',
@@ -151,6 +162,7 @@ export default function ProfileScreen() {
       <SmoothScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<PullToRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <View style={styles.headerSection}>
           <Text style={styles.pageTitle}>Your Profile</Text>

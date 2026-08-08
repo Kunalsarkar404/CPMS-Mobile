@@ -1,6 +1,11 @@
 export type TaskStatus = 'open' | 'pending' | 'closed';
 export type TaskSection = 'current' | 'delayed' | 'closed' | 'future';
 
+export interface TaskAttachment {
+  fileName: string;
+  originalName: string;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -10,6 +15,8 @@ export interface Task {
   section: TaskSection;
   sectionDate: string;
   showAcknowledge?: boolean;
+  attachments?: TaskAttachment[];
+  notes?: string;
 }
 
 export const TASK_SECTIONS: {

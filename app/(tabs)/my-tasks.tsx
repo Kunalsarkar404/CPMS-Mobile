@@ -1,24 +1,25 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
   TextInput,
   Pressable,
+  ActivityIndicator,
   StyleSheet,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import AppHeader from '@/components/AppHeader';
+import PullToRefreshControl from '@/components/PullToRefreshControl';
 import SmoothScrollView from '@/components/SmoothScrollView';
 import Sidebar from '@/components/Sidebar';
 import TaskCard from '@/components/TaskCard';
+import { usePullToRefresh } from '@/hooks';
 import { useSidebarNavigation } from '@/hooks/useSidebarNavigation';
-import {
-  MOCK_TASKS,
-  TASK_SECTIONS,
-  type TaskSection,
-} from '@/constants/tasks';
+import { TASK_SECTIONS, type Task, type TaskSection } from '@/constants/tasks';
+import * as performanceApi from '@/services/performance/performanceApi';
+import { mapTaskToDisplay, parseTaskId } from '@/services/performance/taskMapping';
 
 type TaskFilter = 'all' | TaskSection;
 
@@ -43,10 +44,37 @@ export default function MyTasksScreen() {
     closed: false,
     future: false,
   });
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadTasks = useCallback(async () => {
+    try {
+      const data = await performanceApi.getMyTasks();
+      setTasks(data.map(mapTaskToDisplay));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load tasks');
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setIsLoading(true);
+      await loadTasks();
+      if (active) setIsLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [loadTasks]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(loadTasks);
 
   const filteredTasks = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return MOCK_TASKS.filter((task) => {
+    return tasks.filter((task) => {
       const matchesFilter =
         selectedFilter === 'all' || task.section === selectedFilter;
       const matchesQuery =
@@ -56,7 +84,7 @@ export default function MyTasksScreen() {
 
       return matchesFilter && matchesQuery;
     });
-  }, [query, selectedFilter]);
+  }, [query, selectedFilter, tasks]);
 
   const selectedFilterLabel =
     TASK_FILTERS.find((filter) => filter.key === selectedFilter)?.label ??
@@ -64,6 +92,15 @@ export default function MyTasksScreen() {
 
   const toggleSection = (key: TaskSection) => {
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const navigateToTask = (id: string) => {
+    const key = parseTaskId(id);
+    if (!key) return;
+    router.push({
+      pathname: '/(tabs)/task-detail',
+      params: { taskId: key.taskId, taskTypeId: key.taskTypeId, taskOwnerUserId: key.taskOwnerUserId },
+    });
   };
 
   return (
@@ -76,11 +113,18 @@ export default function MyTasksScreen() {
       <SmoothScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<PullToRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <View style={styles.content}>
           <Text style={styles.title}>
             1.1 Crew Self Service - My Tasks
           </Text>
+
+          {isLoading && <ActivityIndicator style={styles.loadingIndicator} color="#2C5271" />}
+          {error && <Text style={styles.errorText}>{error}</Text>}
+          {!isLoading && !error && tasks.length === 0 && (
+            <Text style={styles.emptyText}>No tasks assigned to you right now</Text>
+          )}
 
           <View style={styles.searchContainer}>
             <Ionicons name="search" size={18} color="#9CA3AF" />
@@ -178,18 +222,8 @@ export default function MyTasksScreen() {
                       key={task.id}
                       task={task}
                       taskNumber={index + 1}
-                      onPress={() =>
-                        router.push({
-                          pathname: '/(tabs)/task-detail',
-                          params: { id: task.id },
-                        })
-                      }
-                      onAcknowledge={() =>
-                        router.push({
-                          pathname: '/(tabs)/task-detail',
-                          params: { id: task.id },
-                        })
-                      }
+                      onPress={() => navigateToTask(task.id)}
+                      onAcknowledge={() => navigateToTask(task.id)}
                     />
                   ))}
                 {hasMoreTasks && (
@@ -245,6 +279,17 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     color: '#111827',
+    marginBottom: 16,
+  },
+  loadingIndicator: {
+    marginBottom: 16,
+  },
+  errorText: {
+    color: '#DC2626',
+    marginBottom: 16,
+  },
+  emptyText: {
+    color: '#6B7280',
     marginBottom: 16,
   },
   searchContainer: {
