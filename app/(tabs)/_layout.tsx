@@ -36,6 +36,10 @@ export default function TabLayout() {
         name="disciplinary"
         options={{ title: 'Disciplinary', href: null }}
       />
+      <Tabs.Screen
+        name="disciplinary-detail"
+        options={{ title: 'Disciplinary Detail', href: null }}
+      />
       <Tabs.Screen name="rewards" options={{ title: 'Rewards', href: null }} />
       <Tabs.Screen
         name="feedback-360"

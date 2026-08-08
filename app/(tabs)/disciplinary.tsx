@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
   TextInput,
   Pressable,
+  ActivityIndicator,
   Alert,
   StyleSheet,
 } from 'react-native';
@@ -11,13 +12,14 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import AppHeader from '@/components/AppHeader';
+import PullToRefreshControl from '@/components/PullToRefreshControl';
 import SmoothScrollView from '@/components/SmoothScrollView';
 import Sidebar from '@/components/Sidebar';
+import { usePullToRefresh } from '@/hooks';
 import { useSidebarNavigation } from '@/hooks/useSidebarNavigation';
-import {
-  MOCK_DISCIPLINARY,
-  type DisciplinaryFilter,
-} from '@/constants/disciplinary';
+import type { DisciplinaryFilter } from '@/constants/disciplinary';
+import * as disciplinaryApi from '@/services/crew/disciplinaryApi';
+import type { CrewDisciplinary } from '@/services/crew/disciplinaryApi';
 
 const STATUS_FILTERS: { id: DisciplinaryFilter; label: string }[] = [
   { id: 'all', label: 'Showing All' },
@@ -25,32 +27,88 @@ const STATUS_FILTERS: { id: DisciplinaryFilter; label: string }[] = [
   { id: 'closed', label: 'Closed' },
 ];
 
+function formatDate(isoDate: string | null): string {
+  if (!isoDate) return '—';
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+}
+
+// The year filter groups records by their incident year, falling back to the
+// workflow's appraisal year when no incident date is set.
+function itemYear(item: CrewDisciplinary): string {
+  if (item.openDate) {
+    const d = new Date(item.openDate);
+    if (!Number.isNaN(d.getTime())) return String(d.getFullYear());
+  }
+  return item.appraisalYear != null ? String(item.appraisalYear) : 'Unknown';
+}
+
 export default function DisciplinaryScreen() {
   const router = useRouter();
   const { handleSidebarItem } = useSidebarNavigation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [year, setYear] = useState('2026');
+  const [year, setYear] = useState('');
   const [statusFilter, setStatusFilter] = useState<DisciplinaryFilter>('all');
   const [yearOpen, setYearOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    'disc-1': true,
-    'disc-2': true,
-  });
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const years = useMemo(
-    () =>
-      Array.from(new Set(MOCK_DISCIPLINARY.map((item) => item.year))).sort(
-        (a, b) => Number(b) - Number(a)
-      ),
-    []
-  );
+  const [items, setItems] = useState<CrewDisciplinary[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const loadDisciplinary = useCallback(async () => {
+    try {
+      const data = await disciplinaryApi.getMyDisciplinary();
+      setItems(data);
+      setLoadError(null);
+    } catch (err) {
+      console.error('[getMyDisciplinary]', err);
+      setLoadError(
+        err instanceof Error ? err.message : 'Failed to load disciplinary records'
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setIsLoading(true);
+      await loadDisciplinary();
+      if (active) setIsLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [loadDisciplinary]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(loadDisciplinary);
+
+  // Real (numeric) years newest-first; the "Unknown" bucket — records with no
+  // incident date and no appraisal year — always sorts last so it never becomes
+  // the default selection (Number('Unknown') is NaN, which doesn't sort).
+  const years = useMemo(() => {
+    const unique = Array.from(new Set(items.map(itemYear)));
+    const numeric = unique
+      .filter((y) => y !== 'Unknown')
+      .sort((a, b) => Number(b) - Number(a));
+    return unique.includes('Unknown') ? [...numeric, 'Unknown'] : numeric;
+  }, [items]);
+
+  // Default the year dropdown to the most recent year present once data loads
+  // (or whenever the current selection is no longer in the list).
+  useEffect(() => {
+    if (years.length && !years.includes(year)) {
+      setYear(years[0]);
+    }
+  }, [years, year]);
 
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return MOCK_DISCIPLINARY.filter((item) => {
-      const matchesYear = item.year === year;
+    return items.filter((item) => {
+      const matchesYear = itemYear(item) === year;
       const matchesStatus =
         statusFilter === 'all' || item.status === statusFilter;
       const matchesQuery =
@@ -61,7 +119,7 @@ export default function DisciplinaryScreen() {
         item.outcome.toLowerCase().includes(q);
       return matchesYear && matchesStatus && matchesQuery;
     });
-  }, [query, year, statusFilter]);
+  }, [items, query, year, statusFilter]);
 
   const toggleCard = (id: string) => {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -77,6 +135,7 @@ export default function DisciplinaryScreen() {
       <SmoothScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<PullToRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <View style={styles.content}>
           <Text style={styles.heading}>1.6 My Disciplinary File</Text>
@@ -164,6 +223,12 @@ export default function DisciplinaryScreen() {
             </View>
           </View>
 
+          {isLoading ? (
+            <ActivityIndicator style={styles.loadingIndicator} color="#2C5271" />
+          ) : loadError ? (
+            <Text style={styles.errorText}>{loadError}</Text>
+          ) : (
+            <>
           {filteredItems.map((item) => {
             const isOpen = expanded[item.id] !== false;
             const isStatusOpen = item.status === 'open';
@@ -206,7 +271,7 @@ export default function DisciplinaryScreen() {
                       <View style={styles.metaCol}>
                         <Text style={styles.metaLabel}>Open Date</Text>
                         <Text style={styles.metaValue}>
-                          {item.openDate}
+                          {formatDate(item.openDate)}
                         </Text>
                       </View>
                     </View>
@@ -247,20 +312,48 @@ export default function DisciplinaryScreen() {
                       </View>
                     </View>
 
+                    {item.attachments.length > 0 && (
+                      <Pressable
+                        style={({ pressed }) => [
+                          styles.attachmentButton,
+                          pressed && styles.attachmentButtonPressed,
+                        ]}
+                        onPress={async () => {
+                          try {
+                            await disciplinaryApi.downloadDisciplinaryFile(
+                              item.attachments[0]
+                            );
+                          } catch (err) {
+                            Alert.alert(
+                              'Download failed',
+                              err instanceof Error
+                                ? err.message
+                                : 'Could not download the attachment.'
+                            );
+                          }
+                        }}
+                      >
+                        <Ionicons name="attach" size={16} color="#6B7280" />
+                        <Text style={styles.attachmentText} numberOfLines={1}>
+                          {item.attachments[0].originalName || 'Attachment'}
+                        </Text>
+                      </Pressable>
+                    )}
+
                     <Pressable
                       style={({ pressed }) => [
-                        styles.attachmentButton,
-                        pressed && styles.attachmentButtonPressed,
+                        styles.detailsButton,
+                        pressed && styles.detailsButtonPressed,
                       ]}
                       onPress={() =>
-                        Alert.alert(
-                          'Attachment',
-                          `Opening attachment for ${item.code}.`
-                        )
+                        router.push({
+                          pathname: '/(tabs)/disciplinary-detail',
+                          params: { id: item.id },
+                        })
                       }
                     >
-                      <Ionicons name="attach" size={16} color="#6B7280" />
-                      <Text style={styles.attachmentText}>Attachment</Text>
+                      <Text style={styles.detailsButtonText}>View Full Details</Text>
+                      <Ionicons name="chevron-forward" size={16} color="#2C5271" />
                     </Pressable>
                   </View>
                 )}
@@ -275,6 +368,8 @@ export default function DisciplinaryScreen() {
                 No disciplinary records found
               </Text>
             </View>
+          )}
+            </>
           )}
         </View>
       </SmoothScrollView>
@@ -338,6 +433,13 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 16,
     zIndex: 10,
+  },
+  loadingIndicator: {
+    marginTop: 24,
+  },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 14,
   },
   dropdownWrapper: {
     position: 'relative',
@@ -525,6 +627,25 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     fontSize: 14,
     color: '#374151',
+  },
+  detailsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#2C5271',
+    borderRadius: 8,
+    paddingVertical: 10,
+  },
+  detailsButtonPressed: {
+    backgroundColor: '#F0F6FA',
+  },
+  detailsButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#2C5271',
+    marginRight: 4,
   },
   emptyState: {
     alignItems: 'center',
