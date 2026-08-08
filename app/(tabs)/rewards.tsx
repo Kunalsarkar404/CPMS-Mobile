@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
   TextInput,
   Pressable,
+  ActivityIndicator,
   Alert,
   StyleSheet,
 } from 'react-native';
@@ -11,38 +12,29 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import AppHeader from '@/components/AppHeader';
+import PullToRefreshControl from '@/components/PullToRefreshControl';
 import SmoothScrollView from '@/components/SmoothScrollView';
 import Sidebar from '@/components/Sidebar';
-import { useAppSelector } from '@/hooks';
+import { useAppSelector, usePullToRefresh } from '@/hooks';
 import { useSidebarNavigation } from '@/hooks/useSidebarNavigation';
+import * as rewardsApi from '@/services/crew/rewardsApi';
+import type { CrewReward } from '@/services/crew/rewardsApi';
 
-interface Reward {
-  id: string;
-  code: string;
-  type: string;
-  date: string;
+function formatDate(isoDate: string | null): string {
+  if (!isoDate) return '—';
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
 }
 
-const MOCK_REWARDS: Reward[] = [
-  {
-    id: 'reward-1',
-    code: 'ATTN',
-    type: 'Attendance',
-    date: '19-03-2026',
-  },
-  {
-    id: 'reward-2',
-    code: 'SAFE',
-    type: 'Safety Excellence',
-    date: '02-05-2026',
-  },
-  {
-    id: 'reward-3',
-    code: 'CUST',
-    type: 'Customer Service',
-    date: '14-08-2026',
-  },
-];
+// The year filter groups rewards by their award year.
+function rewardYear(reward: CrewReward): string {
+  if (reward.date) {
+    const d = new Date(reward.date);
+    if (!Number.isNaN(d.getTime())) return String(d.getFullYear());
+  }
+  return 'Unknown';
+}
 
 export default function RewardsScreen() {
   const router = useRouter();
@@ -50,22 +42,82 @@ export default function RewardsScreen() {
   const { handleSidebarItem } = useSidebarNavigation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [year] = useState('2026');
+  const [year, setYear] = useState('');
+  const [yearOpen, setYearOpen] = useState(false);
+
+  const [rewards, setRewards] = useState<CrewReward[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const staffLabel = staffSession
     ? `${staffSession.staffId} | ${staffSession.fullName}`
-    : 'CP 5785 | Jacob Taylor';
+    : 'Rewards';
+
+  const loadRewards = useCallback(async () => {
+    try {
+      const data = await rewardsApi.getMyRewards();
+      setRewards(data);
+      setLoadError(null);
+    } catch (err) {
+      console.error('[getMyRewards]', err);
+      setLoadError(err instanceof Error ? err.message : 'Failed to load rewards');
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setIsLoading(true);
+      await loadRewards();
+      if (active) setIsLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [loadRewards]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(loadRewards);
+
+  // Real (numeric) years newest-first; the "Unknown" bucket (rewards with no
+  // date) always sorts last so it never becomes the default selection.
+  const years = useMemo(() => {
+    const unique = Array.from(new Set(rewards.map(rewardYear)));
+    const numeric = unique
+      .filter((y) => y !== 'Unknown')
+      .sort((a, b) => Number(b) - Number(a));
+    return unique.includes('Unknown') ? [...numeric, 'Unknown'] : numeric;
+  }, [rewards]);
+
+  useEffect(() => {
+    if (years.length && !years.includes(year)) {
+      setYear(years[0]);
+    }
+  }, [years, year]);
 
   const filteredRewards = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return MOCK_REWARDS;
-    return MOCK_REWARDS.filter(
-      (reward) =>
+    return rewards.filter((reward) => {
+      const matchesYear = !year || rewardYear(reward) === year;
+      const matchesQuery =
+        !q ||
         reward.code.toLowerCase().includes(q) ||
         reward.type.toLowerCase().includes(q) ||
-        reward.date.includes(q)
-    );
-  }, [query]);
+        formatDate(reward.date).includes(q);
+      return matchesYear && matchesQuery;
+    });
+  }, [rewards, query, year]);
+
+  const handleDownload = async (reward: CrewReward) => {
+    if (!reward.letterFileName) return;
+    try {
+      await rewardsApi.downloadRewardLetter(reward.letterFileName);
+    } catch (err) {
+      Alert.alert(
+        'Download failed',
+        err instanceof Error ? err.message : 'Could not download the letter.'
+      );
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -77,11 +129,10 @@ export default function RewardsScreen() {
       <SmoothScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<PullToRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <View style={styles.headerSection}>
-          <Text style={styles.title}>
-            1.5 Crew Self Service - Rewards
-          </Text>
+          <Text style={styles.title}>1.5 Crew Self Service - Rewards</Text>
 
           <View style={styles.searchContainer}>
             <Ionicons name="search" size={18} color="#9CA3AF" />
@@ -96,53 +147,85 @@ export default function RewardsScreen() {
         </View>
 
         <View style={styles.content}>
-          <Pressable style={styles.yearButton}>
-            <Text style={styles.yearText}>{year}</Text>
-            <Ionicons name="chevron-down" size={14} color="#4B5563" />
-          </Pressable>
-
-          <Text style={styles.staffTitle}>
-            {staffLabel} - Rewards
-          </Text>
-
-          {filteredRewards.map((reward) => (
-            <View key={reward.id} style={styles.rewardCard}>
-              <Text style={styles.rewardCode}>{reward.code}</Text>
-
-              <View style={styles.rewardDetails}>
-                <View style={styles.rewardField}>
-                  <Text style={styles.fieldLabel}>Type:</Text>
-                  <Text style={styles.fieldValue}>{reward.type}</Text>
-                </View>
-                <View style={styles.rewardField}>
-                  <Text style={styles.fieldLabel}>Date:</Text>
-                  <Text style={styles.fieldValue}>{reward.date}</Text>
-                </View>
+          <View style={styles.yearWrapper}>
+            <Pressable
+              style={styles.yearButton}
+              onPress={() => setYearOpen((prev) => !prev)}
+            >
+              <Text style={styles.yearText}>{year || '—'}</Text>
+              <Ionicons name="chevron-down" size={14} color="#4B5563" />
+            </Pressable>
+            {yearOpen && years.length > 0 && (
+              <View style={styles.yearMenu}>
+                {years.map((y) => (
+                  <Pressable
+                    key={y}
+                    style={({ pressed }) => [styles.yearItem, pressed && styles.yearItemPressed]}
+                    onPress={() => {
+                      setYear(y);
+                      setYearOpen(false);
+                    }}
+                  >
+                    <Text style={styles.yearItemText}>{y}</Text>
+                  </Pressable>
+                ))}
               </View>
+            )}
+          </View>
 
-              <Pressable
-                style={({ pressed }) => [
-                  styles.downloadButton,
-                  pressed && styles.downloadButtonPressed,
-                ]}
-                onPress={() =>
-                  Alert.alert(
-                    'Download Letter',
-                    `${reward.code} letter download started.`
-                  )
-                }
-              >
-                <Ionicons name="download-outline" size={18} color="#374151" />
-                <Text style={styles.downloadText}>Download Letter</Text>
-              </Pressable>
-            </View>
-          ))}
+          <Text style={styles.staffTitle}>{staffLabel} - Rewards</Text>
 
-          {filteredRewards.length === 0 && (
-            <View style={styles.emptyState}>
-              <Ionicons name="trophy-outline" size={48} color="#D1D5DB" />
-              <Text style={styles.emptyText}>No rewards found</Text>
-            </View>
+          {isLoading ? (
+            <ActivityIndicator style={styles.loadingIndicator} color="#005C70" />
+          ) : loadError ? (
+            <Text style={styles.errorText}>{loadError}</Text>
+          ) : (
+            <>
+              {filteredRewards.map((reward) => (
+                <View key={reward.id} style={styles.rewardCard}>
+                  <Text style={styles.rewardCode}>{reward.code || '—'}</Text>
+
+                  <View style={styles.rewardDetails}>
+                    <View style={styles.rewardField}>
+                      <Text style={styles.fieldLabel}>Type:</Text>
+                      <Text style={styles.fieldValue}>{reward.type || '—'}</Text>
+                    </View>
+                    <View style={styles.rewardField}>
+                      <Text style={styles.fieldLabel}>Date:</Text>
+                      <Text style={styles.fieldValue}>{formatDate(reward.date)}</Text>
+                    </View>
+                    <View style={styles.rewardField}>
+                      <Text style={styles.fieldLabel}>Points:</Text>
+                      <Text style={styles.fieldValue}>
+                        {reward.points != null ? String(reward.points) : '—'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {reward.letterFileName ? (
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.downloadButton,
+                        pressed && styles.downloadButtonPressed,
+                      ]}
+                      onPress={() => handleDownload(reward)}
+                    >
+                      <Ionicons name="download-outline" size={18} color="#374151" />
+                      <Text style={styles.downloadText}>Download Letter</Text>
+                    </Pressable>
+                  ) : (
+                    <Text style={styles.noLetterText}>No letter attached</Text>
+                  )}
+                </View>
+              ))}
+
+              {filteredRewards.length === 0 && (
+                <View style={styles.emptyState}>
+                  <Ionicons name="trophy-outline" size={48} color="#D1D5DB" />
+                  <Text style={styles.emptyText}>No rewards found</Text>
+                </View>
+              )}
+            </>
           )}
         </View>
       </SmoothScrollView>
@@ -200,28 +283,64 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 16,
   },
+  yearWrapper: {
+    position: 'relative',
+    alignSelf: 'flex-start',
+    marginBottom: 16,
+    zIndex: 10,
+  },
   yearButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
     borderWidth: 1,
     borderColor: '#D1D5DB',
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
     backgroundColor: '#FFFFFF',
-    marginBottom: 16,
   },
   yearText: {
     fontSize: 14,
     color: '#1F2937',
     marginRight: 4,
   },
+  yearMenu: {
+    position: 'absolute',
+    top: 44,
+    left: 0,
+    minWidth: 100,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 8,
+    overflow: 'hidden',
+    zIndex: 20,
+  },
+  yearItem: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  yearItemPressed: {
+    backgroundColor: '#F9FAFB',
+  },
+  yearItemText: {
+    fontSize: 14,
+    color: '#1F2937',
+  },
   staffTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#005C70',
     marginBottom: 16,
+  },
+  loadingIndicator: {
+    marginTop: 24,
+  },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 14,
   },
   rewardCard: {
     backgroundColor: '#FFFFFF',
@@ -272,6 +391,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: '#1F2937',
+  },
+  noLetterText: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    fontStyle: 'italic',
   },
   emptyState: {
     alignItems: 'center',
