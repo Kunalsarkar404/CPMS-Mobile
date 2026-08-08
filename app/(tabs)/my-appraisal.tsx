@@ -1,28 +1,290 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
   TextInput,
   Pressable,
-  Alert,
+  ActivityIndicator,
   StyleSheet,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as DocumentPicker from 'expo-document-picker';
 
 import AppHeader from '@/components/AppHeader';
+import PullToRefreshControl from '@/components/PullToRefreshControl';
 import SmoothScrollView from '@/components/SmoothScrollView';
 import Sidebar from '@/components/Sidebar';
 import AppraisalAccordion from '@/components/AppraisalAccordion';
+import { usePullToRefresh } from '@/hooks';
 import { useSidebarNavigation } from '@/hooks/useSidebarNavigation';
-import {
-  APPRAISAL_TABS,
-  LOREM,
-  MOCK_OBJECTIVES,
-  type AppraisalTab,
-} from '@/constants/appraisal';
+import { APPRAISAL_TABS, type AppraisalTab } from '@/constants/appraisal';
+import * as appraisalApi from '@/services/crew/appraisalApi';
+import type {
+  AppraisalObjective,
+  AppraisalCycleFlags,
+  AppraisalSectionMode,
+  CrewAppraisal,
+  AppraisalAttachment,
+} from '@/services/crew/appraisalApi';
 
-type ExpandedMap = Record<string, boolean>;
+const CURRENT_YEAR = new Date().getFullYear();
+const YEAR_OPTIONS = [0, 1, 2, 3].map((offset) => String(CURRENT_YEAR - offset));
+
+const HIDDEN_CYCLE: AppraisalCycleFlags = {
+  OBJECTIVE_FLAG: 'HIDE',
+  MID_YEAR_COMMENTS_FLAG: 'HIDE',
+  MID_YEAR_RATING_FLAG: 'HIDE',
+  YEAR_END_COMMENTS_FLAG: 'HIDE',
+  YEAR_END_RATING_FLAG: 'HIDE',
+};
+
+// --- Attachment chip row, shared by the objective/mid-year/year-end sections ---
+function AttachmentChip({
+  attachment,
+  removable,
+  isDownloading,
+  isDownloaded,
+  onDownload,
+  onRemove,
+}: {
+  attachment: AppraisalAttachment;
+  removable: boolean;
+  isDownloading: boolean;
+  isDownloaded: boolean;
+  onDownload: () => void;
+  onRemove?: () => void;
+}) {
+  return (
+    <View style={styles.attachmentChip}>
+      <Pressable style={styles.attachmentChipLabel} onPress={onDownload} disabled={isDownloading}>
+        {isDownloading ? (
+          <ActivityIndicator size="small" color="#374151" />
+        ) : (
+          <Ionicons
+            name={isDownloaded ? 'checkmark-circle' : 'download-outline'}
+            size={16}
+            color={isDownloaded ? '#16A34A' : '#374151'}
+          />
+        )}
+        <Text style={styles.attachmentChipText} numberOfLines={1}>
+          {attachment.originalName}
+        </Text>
+      </Pressable>
+      {removable && onRemove && (
+        <Pressable style={styles.attachmentChipRemove} onPress={onRemove}>
+          <Ionicons name="close" size={16} color="#9CA3AF" />
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+// --- Crew-editable comments + attachments section (Mid-Year or Year-End) ---
+function CrewCommentSection({
+  title,
+  initialValue,
+  initialAttachments,
+  mode,
+  onSave,
+}: {
+  title: string;
+  initialValue: string;
+  initialAttachments: AppraisalAttachment[];
+  mode: AppraisalSectionMode;
+  onSave: (comments: string, attachments: AppraisalAttachment[]) => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(initialValue);
+  const [attachments, setAttachments] = useState(initialAttachments);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [downloadingFile, setDownloadingFile] = useState<string | null>(null);
+  const [downloadedFiles, setDownloadedFiles] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+
+  const startEdit = () => {
+    setDraft(initialValue);
+    setAttachments(initialAttachments);
+    setError(null);
+    setEditing(true);
+  };
+
+  const handlePickAttachment = async () => {
+    const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
+    if (result.canceled) return;
+    setIsUploading(true);
+    setError(null);
+    try {
+      for (const asset of result.assets) {
+        const uploaded = await appraisalApi.uploadAppraisalFile(asset.uri, asset.mimeType ?? undefined);
+        setAttachments((prev) => [...prev, uploaded]);
+      }
+    } catch (err) {
+      console.error('[uploadAppraisalFile]', err);
+      setError(err instanceof Error ? err.message : 'Failed to upload attachment');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDownloadAttachment = async (attachment: AppraisalAttachment) => {
+    setDownloadingFile(attachment.fileName);
+    setError(null);
+    try {
+      await appraisalApi.downloadAppraisalFile(attachment);
+      setDownloadedFiles((prev) => new Set(prev).add(attachment.fileName));
+    } catch (err) {
+      console.error('[downloadAppraisalFile]', err);
+      setError(err instanceof Error ? err.message : 'Failed to download attachment');
+    } finally {
+      setDownloadingFile(null);
+    }
+  };
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      await onSave(draft, attachments);
+      setEditing(false);
+    } catch (err) {
+      console.error('[saveAppraisalSection]', err);
+      setError(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <AppraisalAccordion
+      title={title}
+      expanded={expanded}
+      onToggle={() => setExpanded((v) => !v)}
+      onEdit={mode === 'EDIT' && !editing ? startEdit : undefined}
+    >
+      {editing ? (
+        <View>
+          <TextInput
+            style={styles.commentInput}
+            multiline
+            textAlignVertical="top"
+            placeholder="Type your comments here"
+            placeholderTextColor="#9CA3AF"
+            value={draft}
+            onChangeText={setDraft}
+          />
+
+          <Pressable
+            style={[styles.attachmentButton, isUploading && styles.attachmentButtonDisabled]}
+            onPress={handlePickAttachment}
+            disabled={isUploading}
+          >
+            {isUploading ? (
+              <ActivityIndicator size="small" color="#6B7280" />
+            ) : (
+              <Ionicons name="attach" size={16} color="#6B7280" />
+            )}
+            <Text style={styles.attachmentText}>{isUploading ? 'Uploading…' : 'Attachment'}</Text>
+          </Pressable>
+
+          {attachments.length > 0 && (
+            <View style={styles.attachmentList}>
+              {attachments.map((a) => (
+                <AttachmentChip
+                  key={a.fileName}
+                  attachment={a}
+                  removable
+                  isDownloading={downloadingFile === a.fileName}
+                  isDownloaded={downloadedFiles.has(a.fileName)}
+                  onDownload={() => handleDownloadAttachment(a)}
+                  onRemove={() => setAttachments((prev) => prev.filter((x) => x.fileName !== a.fileName))}
+                />
+              ))}
+            </View>
+          )}
+
+          {error && <Text style={styles.errorText}>{error}</Text>}
+
+          <View style={styles.editActions}>
+            <Pressable style={styles.cancelButton} onPress={() => setEditing(false)} disabled={isSaving}>
+              <Text style={styles.cancelText}>Cancel</Text>
+            </Pressable>
+            <Pressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
+              {isSaving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.saveText}>Save</Text>}
+            </Pressable>
+          </View>
+        </View>
+      ) : (
+        <View>
+          <Text style={styles.bodyText}>{initialValue || 'No comments yet.'}</Text>
+          {initialAttachments.length > 0 && (
+            <View style={styles.attachmentList}>
+              {initialAttachments.map((a) => (
+                <AttachmentChip
+                  key={a.fileName}
+                  attachment={a}
+                  removable={false}
+                  isDownloading={downloadingFile === a.fileName}
+                  isDownloaded={downloadedFiles.has(a.fileName)}
+                  onDownload={() => handleDownloadAttachment(a)}
+                />
+              ))}
+            </View>
+          )}
+        </View>
+      )}
+    </AppraisalAccordion>
+  );
+}
+
+// --- Read-only PM-side comments + attachments ---
+function ReadOnlyCommentSection({
+  title,
+  value,
+  attachments,
+}: {
+  title: string;
+  value: string;
+  attachments: AppraisalAttachment[];
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [downloadingFile, setDownloadingFile] = useState<string | null>(null);
+  const [downloadedFiles, setDownloadedFiles] = useState<Set<string>>(new Set());
+
+  const handleDownload = async (attachment: AppraisalAttachment) => {
+    setDownloadingFile(attachment.fileName);
+    try {
+      await appraisalApi.downloadAppraisalFile(attachment);
+      setDownloadedFiles((prev) => new Set(prev).add(attachment.fileName));
+    } catch (err) {
+      console.error('[downloadAppraisalFile]', err);
+    } finally {
+      setDownloadingFile(null);
+    }
+  };
+
+  return (
+    <AppraisalAccordion title={title} expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
+      <Text style={styles.bodyText}>{value || 'No comments yet.'}</Text>
+      {attachments.length > 0 && (
+        <View style={styles.attachmentList}>
+          {attachments.map((a) => (
+            <AttachmentChip
+              key={a.fileName}
+              attachment={a}
+              removable={false}
+              isDownloading={downloadingFile === a.fileName}
+              isDownloaded={downloadedFiles.has(a.fileName)}
+              onDownload={() => handleDownload(a)}
+            />
+          ))}
+        </View>
+      )}
+    </AppraisalAccordion>
+  );
+}
 
 export default function MyAppraisalScreen() {
   const router = useRouter();
@@ -30,65 +292,116 @@ export default function MyAppraisalScreen() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeTab, setActiveTab] = useState<AppraisalTab>('objectives');
-  const [year] = useState('2026');
+  const [year, setYear] = useState(YEAR_OPTIONS[0]);
+  const [yearOpen, setYearOpen] = useState(false);
   const [objectiveIndex, setObjectiveIndex] = useState(0);
-  const [editingCrew, setEditingCrew] = useState(false);
-  const [crewCommentDraft, setCrewCommentDraft] = useState('');
-  const [annualCrewComment, setAnnualCrewComment] = useState('');
-  const [expanded, setExpanded] = useState<ExpandedMap>({
-    objectives: true,
-    crew: true,
-    appraiser: true,
-    midCrew: true,
-    midAppraiser: true,
-    midRating: true,
-    annualCrew: true,
-    annualAppraiser: true,
-    annualRating: true,
-  });
 
-  const currentObjective = MOCK_OBJECTIVES[objectiveIndex];
+  const [objectives, setObjectives] = useState<AppraisalObjective[]>([]);
+  const [appraisal, setAppraisal] = useState<CrewAppraisal | null>(null);
+  const [cycle, setCycle] = useState<AppraisalCycleFlags>(HIDDEN_CYCLE);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const [editingObjective, setEditingObjective] = useState(false);
+  const [objectiveDraft, setObjectiveDraft] = useState('');
+  const [isSavingObjective, setIsSavingObjective] = useState(false);
+  const [objectiveError, setObjectiveError] = useState<string | null>(null);
+
+  const loadAll = useCallback(async () => {
+    try {
+      const [objectivesRes, appraisalRes, cycleRes] = await Promise.all([
+        appraisalApi.getMyAppraisalObjectives(),
+        appraisalApi.getMyAppraisal(year),
+        appraisalApi.getAppraisalCycle(year),
+      ]);
+      setObjectives(objectivesRes);
+      setAppraisal(appraisalRes);
+      setCycle(cycleRes);
+      setLoadError(null);
+    } catch (err) {
+      console.error('[loadMyAppraisal]', err);
+      setLoadError(err instanceof Error ? err.message : 'Failed to load appraisal');
+    }
+  }, [year]);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setIsLoading(true);
+      await loadAll();
+      if (active) setIsLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [loadAll]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(loadAll);
 
   const filteredObjectives = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return MOCK_OBJECTIVES;
-    return MOCK_OBJECTIVES.filter(
-      (obj) =>
-        obj.category.toLowerCase().includes(q) ||
-        obj.title.toLowerCase().includes(q) ||
-        obj.description.toLowerCase().includes(q)
-    );
-  }, [query]);
+    return objectives.filter((obj) => {
+      if (obj.AppraisalYear !== year) return false;
+      if (!q) return true;
+      return (
+        (obj.AREA_OF_FOCUS ?? '').toLowerCase().includes(q) ||
+        (obj.OBJ_DESC ?? '').toLowerCase().includes(q)
+      );
+    });
+  }, [objectives, year, query]);
 
-  const displayObjective =
-    filteredObjectives[Math.min(objectiveIndex, filteredObjectives.length - 1)] ??
-    currentObjective;
+  useEffect(() => {
+    setObjectiveIndex(0);
+    setEditingObjective(false);
+  }, [year, query]);
 
-  const toggle = (key: string) => {
-    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
+  const displayObjective = filteredObjectives[Math.min(objectiveIndex, filteredObjectives.length - 1)];
 
   const goPrev = () => {
     setObjectiveIndex((prev) => Math.max(0, prev - 1));
-    setEditingCrew(false);
+    setEditingObjective(false);
   };
-
   const goNext = () => {
-    setObjectiveIndex((prev) =>
-      Math.min(MOCK_OBJECTIVES.length - 1, prev + 1)
-    );
-    setEditingCrew(false);
+    setObjectiveIndex((prev) => Math.min(filteredObjectives.length - 1, prev + 1));
+    setEditingObjective(false);
   };
 
-  const startEditCrew = () => {
-    setCrewCommentDraft(displayObjective.crewComments);
-    setEditingCrew(true);
+  const startEditObjective = () => {
+    setObjectiveDraft(displayObjective?.OBJ_CREW_COMMENTS ?? '');
+    setObjectiveError(null);
+    setEditingObjective(true);
   };
 
-  const saveCrewComments = () => {
-    displayObjective.crewComments = crewCommentDraft;
-    setEditingCrew(false);
-    Alert.alert('Saved', 'Crew comments updated.');
+  const saveObjectiveComment = async () => {
+    if (!displayObjective) return;
+    setIsSavingObjective(true);
+    setObjectiveError(null);
+    try {
+      const updated = await appraisalApi.updateMyAppraisalObjective(displayObjective.AppraisalId, objectiveDraft);
+      setObjectives((prev) => prev.map((o) => (o.AppraisalId === updated.AppraisalId ? updated : o)));
+      setEditingObjective(false);
+    } catch (err) {
+      console.error('[updateMyAppraisalObjective]', err);
+      setObjectiveError(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setIsSavingObjective(false);
+    }
+  };
+
+  const saveMidYear = async (comments: string, attachments: AppraisalAttachment[]) => {
+    const updated = await appraisalApi.updateMyAppraisal(year, {
+      MID_CrewComments: comments,
+      Mid_CrewAttachments: attachments,
+    });
+    setAppraisal(updated);
+  };
+
+  const saveYearEnd = async (comments: string, attachments: AppraisalAttachment[]) => {
+    const updated = await appraisalApi.updateMyAppraisal(year, {
+      YEAR_END_CrewComments: comments,
+      Year_End_Crew_Attachments: attachments,
+    });
+    setAppraisal(updated);
   };
 
   return (
@@ -101,11 +414,17 @@ export default function MyAppraisalScreen() {
       <SmoothScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<PullToRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <View style={styles.content}>
-          <Text style={styles.title}>
-            1.2 Crew Self Service - My Appraisal
-          </Text>
+          <Text style={styles.title}>1.2 Crew Self Service - My Appraisal</Text>
+
+          {appraisal?.APPRAISER_STAFF && (
+            <Text style={styles.appraiserLine}>
+              Appraiser: {appraisal.APPRAISER_STAFF}
+              {appraisal.AppraiserName ? ` - ${appraisal.AppraiserName}` : ''}
+            </Text>
+          )}
 
           <View style={styles.searchContainer}>
             <Ionicons name="search" size={18} color="#9CA3AF" />
@@ -124,17 +443,11 @@ export default function MyAppraisalScreen() {
               return (
                 <Pressable
                   key={tab.id}
-                  style={[
-                    styles.tab,
-                    isActive ? styles.tabActive : styles.tabInactive,
-                  ]}
+                  style={[styles.tab, isActive ? styles.tabActive : styles.tabInactive]}
                   onPress={() => setActiveTab(tab.id)}
                 >
                   <Text
-                    style={[
-                      styles.tabText,
-                      isActive ? styles.tabTextActive : styles.tabTextInactive,
-                    ]}
+                    style={[styles.tabText, isActive ? styles.tabTextActive : styles.tabTextInactive]}
                     numberOfLines={2}
                   >
                     {tab.label}
@@ -144,216 +457,211 @@ export default function MyAppraisalScreen() {
             })}
           </View>
 
-          {activeTab === 'objectives' && (
-            <>
-              <Pressable style={styles.yearButton}>
-                <Text style={styles.yearText}>{year}</Text>
-                <Ionicons name="chevron-down" size={14} color="#4B5563" />
-              </Pressable>
-
-              <View style={styles.objectiveHeader}>
-                <Text style={styles.objectiveTitle}>
-                  Objective {objectiveIndex + 1} of {MOCK_OBJECTIVES.length}
-                </Text>
-                <View style={styles.objectiveNav}>
+          <View style={styles.yearContainer}>
+            <Pressable style={styles.yearButton} onPress={() => setYearOpen((v) => !v)}>
+              <Text style={styles.yearText}>{year}</Text>
+              <Ionicons name={yearOpen ? 'chevron-up' : 'chevron-down'} size={14} color="#4B5563" />
+            </Pressable>
+            {yearOpen && (
+              <View style={styles.yearMenu}>
+                {YEAR_OPTIONS.map((y) => (
                   <Pressable
-                    onPress={goPrev}
-                    disabled={objectiveIndex === 0}
-                    hitSlop={8}
+                    key={y}
+                    style={styles.yearOption}
+                    onPress={() => {
+                      setYear(y);
+                      setYearOpen(false);
+                    }}
                   >
-                    <Ionicons
-                      name="chevron-back"
-                      size={22}
-                      color={objectiveIndex === 0 ? '#D1D5DB' : '#005C70'}
-                    />
+                    <Text style={[styles.yearOptionText, y === year && styles.yearOptionTextSelected]}>{y}</Text>
+                    {y === year && <Ionicons name="checkmark" size={16} color="#5B8C3E" />}
                   </Pressable>
-                  <Pressable
-                    onPress={goNext}
-                    disabled={objectiveIndex === MOCK_OBJECTIVES.length - 1}
-                    hitSlop={8}
-                  >
-                    <Ionicons
-                      name="chevron-forward"
-                      size={22}
-                      color={
-                        objectiveIndex === MOCK_OBJECTIVES.length - 1
-                          ? '#D1D5DB'
-                          : '#005C70'
-                      }
-                    />
-                  </Pressable>
-                </View>
+                ))}
               </View>
+            )}
+          </View>
 
-              <Text style={styles.category}>
-                {displayObjective.category}
-              </Text>
-
-              <AppraisalAccordion
-                title={displayObjective.title}
-                expanded={expanded.objectives}
-                onToggle={() => toggle('objectives')}
-              >
-                <Text style={styles.bodyText}>
-                  {displayObjective.description}
-                </Text>
-              </AppraisalAccordion>
-
-              <AppraisalAccordion
-                title="Crew Comments"
-                expanded={expanded.crew}
-                onToggle={() => toggle('crew')}
-                onEdit={editingCrew ? undefined : startEditCrew}
-              >
-                {editingCrew ? (
-                  <View>
-                    <TextInput
-                      style={styles.commentInput}
-                      multiline
-                      textAlignVertical="top"
-                      value={crewCommentDraft}
-                      onChangeText={setCrewCommentDraft}
-                    />
-                    <View style={styles.editActions}>
-                      <Pressable
-                        style={styles.cancelButton}
-                        onPress={() => setEditingCrew(false)}
-                      >
-                        <Text style={styles.cancelText}>Cancel</Text>
-                      </Pressable>
-                      <Pressable
-                        style={styles.saveButton}
-                        onPress={saveCrewComments}
-                      >
-                        <Text style={styles.saveText}>Save</Text>
-                      </Pressable>
-                    </View>
-                  </View>
+          {isLoading ? (
+            <ActivityIndicator style={styles.loadingIndicator} color="#005C70" />
+          ) : loadError ? (
+            <Text style={styles.errorText}>{loadError}</Text>
+          ) : (
+            <>
+              {activeTab === 'objectives' &&
+                (cycle.OBJECTIVE_FLAG === 'HIDE' ? (
+                  <Text style={styles.naText}>Objectives aren't available for {year} yet.</Text>
+                ) : filteredObjectives.length === 0 ? (
+                  <Text style={styles.naText}>No objectives found.</Text>
                 ) : (
-                  <Text style={styles.bodyText}>
-                    {displayObjective.crewComments}
-                  </Text>
-                )}
-              </AppraisalAccordion>
+                  <>
+                    <View style={styles.objectiveHeader}>
+                      <Text style={styles.objectiveTitle}>
+                        Objective {objectiveIndex + 1} of {filteredObjectives.length}
+                      </Text>
+                      <View style={styles.objectiveNav}>
+                        <Pressable onPress={goPrev} disabled={objectiveIndex === 0} hitSlop={8}>
+                          <Ionicons
+                            name="chevron-back"
+                            size={22}
+                            color={objectiveIndex === 0 ? '#D1D5DB' : '#005C70'}
+                          />
+                        </Pressable>
+                        <Pressable
+                          onPress={goNext}
+                          disabled={objectiveIndex === filteredObjectives.length - 1}
+                          hitSlop={8}
+                        >
+                          <Ionicons
+                            name="chevron-forward"
+                            size={22}
+                            color={objectiveIndex === filteredObjectives.length - 1 ? '#D1D5DB' : '#005C70'}
+                          />
+                        </Pressable>
+                      </View>
+                    </View>
 
-              <AppraisalAccordion
-                title="Appraiser Comments"
-                expanded={expanded.appraiser}
-                onToggle={() => toggle('appraiser')}
-              >
-                <Text style={styles.bodyText}>
-                  {displayObjective.appraiserComments}
-                </Text>
-              </AppraisalAccordion>
+                    <Text style={styles.category}>{displayObjective?.AREA_OF_FOCUS || 'General'}</Text>
 
-              <View style={styles.navButtons}>
-                {objectiveIndex > 0 && (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.prevButton,
-                      pressed && styles.prevButtonPressed,
-                    ]}
-                    onPress={goPrev}
-                  >
-                    <Text style={styles.prevButtonText}>Previous</Text>
-                  </Pressable>
-                )}
-                {objectiveIndex < MOCK_OBJECTIVES.length - 1 && (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.nextButton,
-                      pressed && styles.nextButtonPressed,
-                    ]}
-                    onPress={goNext}
-                  >
-                    <Text style={styles.nextButtonText}>Next</Text>
-                  </Pressable>
-                )}
-              </View>
-            </>
-          )}
+                    <AppraisalAccordion title="Objective" expanded onToggle={() => {}}>
+                      <Text style={styles.bodyText}>{displayObjective?.OBJ_DESC || '—'}</Text>
+                    </AppraisalAccordion>
 
-          {activeTab === 'mid_year' && (
-            <>
-              <Text style={styles.reviewTitle}>Mid Year Review</Text>
+                    <AppraisalAccordion
+                      title="Crew Comments"
+                      expanded
+                      onToggle={() => {}}
+                      onEdit={cycle.OBJECTIVE_FLAG === 'EDIT' && !editingObjective ? startEditObjective : undefined}
+                    >
+                      {editingObjective ? (
+                        <View>
+                          <TextInput
+                            style={styles.commentInput}
+                            multiline
+                            textAlignVertical="top"
+                            value={objectiveDraft}
+                            onChangeText={setObjectiveDraft}
+                          />
+                          {objectiveError && <Text style={styles.errorText}>{objectiveError}</Text>}
+                          <View style={styles.editActions}>
+                            <Pressable
+                              style={styles.cancelButton}
+                              onPress={() => setEditingObjective(false)}
+                              disabled={isSavingObjective}
+                            >
+                              <Text style={styles.cancelText}>Cancel</Text>
+                            </Pressable>
+                            <Pressable
+                              style={styles.saveButton}
+                              onPress={saveObjectiveComment}
+                              disabled={isSavingObjective}
+                            >
+                              {isSavingObjective ? (
+                                <ActivityIndicator color="#FFFFFF" />
+                              ) : (
+                                <Text style={styles.saveText}>Save</Text>
+                              )}
+                            </Pressable>
+                          </View>
+                        </View>
+                      ) : (
+                        <Text style={styles.bodyText}>{displayObjective?.OBJ_CREW_COMMENTS || 'No comments yet.'}</Text>
+                      )}
+                    </AppraisalAccordion>
 
-              <Pressable style={styles.attachmentButton}>
-                <Ionicons name="attach" size={16} color="#6B7280" />
-                <Text style={styles.attachmentText}>Attachment</Text>
-              </Pressable>
+                    <AppraisalAccordion title="Appraiser Comments" expanded onToggle={() => {}}>
+                      <Text style={styles.bodyText}>{displayObjective?.OBJ_PM_COMMENTS || 'No comments yet.'}</Text>
+                    </AppraisalAccordion>
 
-              <AppraisalAccordion
-                title="Appraise Comments (Crew)"
-                expanded={expanded.midCrew}
-                onToggle={() => toggle('midCrew')}
-                onEdit={() =>
-                  Alert.alert('Edit', 'Crew mid-year comments editing.')
-                }
-              >
-                <Text style={styles.bodyText}>{LOREM}</Text>
-              </AppraisalAccordion>
+                    <View style={styles.navButtons}>
+                      {objectiveIndex > 0 && (
+                        <Pressable
+                          style={({ pressed }) => [styles.prevButton, pressed && styles.prevButtonPressed]}
+                          onPress={goPrev}
+                        >
+                          <Text style={styles.prevButtonText}>Previous</Text>
+                        </Pressable>
+                      )}
+                      {objectiveIndex < filteredObjectives.length - 1 && (
+                        <Pressable
+                          style={({ pressed }) => [styles.nextButton, pressed && styles.nextButtonPressed]}
+                          onPress={goNext}
+                        >
+                          <Text style={styles.nextButtonText}>Next</Text>
+                        </Pressable>
+                      )}
+                    </View>
+                  </>
+                ))}
 
-              <AppraisalAccordion
-                title="Appraise Comments"
-                expanded={expanded.midAppraiser}
-                onToggle={() => toggle('midAppraiser')}
-              >
-                <Text style={styles.bodyText}>{LOREM}</Text>
-              </AppraisalAccordion>
+              {activeTab === 'mid_year' && (
+                <>
+                  <Text style={styles.reviewTitle}>Mid Year Review</Text>
+                  {cycle.MID_YEAR_COMMENTS_FLAG === 'HIDE' && cycle.MID_YEAR_RATING_FLAG === 'HIDE' ? (
+                    <Text style={styles.naText}>Mid-year review isn't available for {year} yet.</Text>
+                  ) : (
+                    <>
+                      {cycle.MID_YEAR_COMMENTS_FLAG !== 'HIDE' && (
+                        <>
+                          <CrewCommentSection
+                            key={`mid-crew-${year}`}
+                            title="Appraise Comments (Crew)"
+                            initialValue={appraisal?.MID_CrewComments ?? ''}
+                            initialAttachments={appraisal?.Mid_CrewAttachments ?? []}
+                            mode={cycle.MID_YEAR_COMMENTS_FLAG}
+                            onSave={saveMidYear}
+                          />
+                          <ReadOnlyCommentSection
+                            key={`mid-pm-${year}`}
+                            title="Appraiser Comments"
+                            value={appraisal?.MID_APRAISERCOMMENTS ?? ''}
+                            attachments={appraisal?.MID_APRAISER_ATTACHMENTS ?? []}
+                          />
+                        </>
+                      )}
+                      {cycle.MID_YEAR_RATING_FLAG !== 'HIDE' && (
+                        <AppraisalAccordion title="Mid-Year Rating" expanded onToggle={() => {}}>
+                          <Text style={styles.naText}>{appraisal?.MID_RATING || 'N/A'}</Text>
+                        </AppraisalAccordion>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
 
-              <AppraisalAccordion
-                title="Final Rating"
-                expanded={expanded.midRating}
-                onToggle={() => toggle('midRating')}
-              >
-                <Text style={styles.naText}>N/A</Text>
-              </AppraisalAccordion>
-            </>
-          )}
-
-          {activeTab === 'annual_year' && (
-            <>
-              <Text style={styles.reviewTitle}>Annual Year Review</Text>
-
-              <Pressable style={styles.attachmentButton}>
-                <Ionicons name="attach" size={16} color="#6B7280" />
-                <Text style={styles.attachmentText}>Attachment</Text>
-              </Pressable>
-
-              <AppraisalAccordion
-                title="Appraise Comments (Crew)"
-                expanded={expanded.annualCrew}
-                onToggle={() => toggle('annualCrew')}
-                onEdit={() =>
-                  Alert.alert('Edit', 'You can type your comments below.')
-                }
-              >
-                <TextInput
-                  style={styles.annualInput}
-                  placeholder="Type something here"
-                  placeholderTextColor="#9CA3AF"
-                  multiline
-                  textAlignVertical="top"
-                  value={annualCrewComment}
-                  onChangeText={setAnnualCrewComment}
-                />
-              </AppraisalAccordion>
-
-              <AppraisalAccordion
-                title="Appraise Comments"
-                expanded={expanded.annualAppraiser}
-                onToggle={() => toggle('annualAppraiser')}
-              >
-                <Text style={styles.naText}>N/A</Text>
-              </AppraisalAccordion>
-
-              <AppraisalAccordion
-                title="Final Rating"
-                expanded={expanded.annualRating}
-                onToggle={() => toggle('annualRating')}
-              >
-                <Text style={styles.naText}>N/A</Text>
-              </AppraisalAccordion>
+              {activeTab === 'annual_year' && (
+                <>
+                  <Text style={styles.reviewTitle}>Annual Year Review</Text>
+                  {cycle.YEAR_END_COMMENTS_FLAG === 'HIDE' && cycle.YEAR_END_RATING_FLAG === 'HIDE' ? (
+                    <Text style={styles.naText}>Year-end review isn't available for {year} yet.</Text>
+                  ) : (
+                    <>
+                      {cycle.YEAR_END_COMMENTS_FLAG !== 'HIDE' && (
+                        <>
+                          <CrewCommentSection
+                            key={`ye-crew-${year}`}
+                            title="Appraise Comments (Crew)"
+                            initialValue={appraisal?.YEAR_END_CrewComments ?? ''}
+                            initialAttachments={appraisal?.Year_End_Crew_Attachments ?? []}
+                            mode={cycle.YEAR_END_COMMENTS_FLAG}
+                            onSave={saveYearEnd}
+                          />
+                          <ReadOnlyCommentSection
+                            key={`ye-pm-${year}`}
+                            title="Appraiser Comments"
+                            value={appraisal?.Year_END_PM_COMMENTS ?? ''}
+                            attachments={appraisal?.Year_END_PM_Attachment ?? []}
+                          />
+                        </>
+                      )}
+                      {cycle.YEAR_END_RATING_FLAG !== 'HIDE' && (
+                        <AppraisalAccordion title="Final Rating" expanded onToggle={() => {}}>
+                          <Text style={styles.naText}>{appraisal?.Year_End_Rating || 'N/A'}</Text>
+                        </AppraisalAccordion>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
             </>
           )}
         </View>
@@ -388,6 +696,11 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     color: '#111827',
+    marginBottom: 8,
+  },
+  appraiserLine: {
+    fontSize: 13,
+    color: '#6B7280',
     marginBottom: 16,
   },
   searchContainer: {
@@ -442,22 +755,59 @@ const styles = StyleSheet.create({
   tabTextInactive: {
     color: '#4B5563',
   },
+  yearContainer: {
+    alignSelf: 'flex-start',
+    marginBottom: 16,
+    zIndex: 20,
+  },
   yearButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
     borderWidth: 1,
     borderColor: '#D1D5DB',
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
     backgroundColor: '#FFFFFF',
-    marginBottom: 16,
   },
   yearText: {
     fontSize: 14,
     color: '#1F2937',
     marginRight: 4,
+  },
+  yearMenu: {
+    position: 'absolute',
+    top: 42,
+    left: 0,
+    minWidth: 120,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 10,
+    overflow: 'hidden',
+    elevation: 8,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.16,
+    shadowRadius: 8,
+  },
+  yearOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  yearOptionText: {
+    fontSize: 14,
+    color: '#374151',
+  },
+  yearOptionTextSelected: {
+    color: '#5B8C3E',
+    fontWeight: '600',
+  },
+  loadingIndicator: {
+    marginTop: 24,
   },
   objectiveHeader: {
     flexDirection: 'row',
@@ -573,29 +923,56 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
+    marginTop: 12,
     borderWidth: 1,
     borderColor: '#D1D5DB',
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
     backgroundColor: '#FFFFFF',
-    marginBottom: 16,
+  },
+  attachmentButtonDisabled: {
+    opacity: 0.7,
   },
   attachmentText: {
     marginLeft: 8,
     fontSize: 14,
     color: '#374151',
   },
-  annualInput: {
+  attachmentList: {
+    marginTop: 12,
+    gap: 8,
+  },
+  attachmentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F9FAFB',
     borderWidth: 1,
     borderColor: '#E5E7EB',
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
+  },
+  attachmentChipLabel: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  attachmentChipText: {
+    marginLeft: 8,
     fontSize: 14,
-    color: '#1F2937',
-    minHeight: 100,
-    backgroundColor: '#FFFFFF',
+    color: '#374151',
+    flexShrink: 1,
+  },
+  attachmentChipRemove: {
+    padding: 4,
+  },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 14,
+    marginTop: 8,
   },
   naText: {
     fontSize: 14,
