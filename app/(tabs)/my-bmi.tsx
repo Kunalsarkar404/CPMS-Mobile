@@ -1,17 +1,99 @@
-import { useMemo, useState } from 'react';
-import { View, Text, TextInput, StyleSheet } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  Pressable,
+  ActivityIndicator,
+  Alert,
+  Platform,
+  StyleSheet,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import AppHeader from '@/components/AppHeader';
+import PullToRefreshControl from '@/components/PullToRefreshControl';
 import Sidebar from '@/components/Sidebar';
 import SmoothScrollView from '@/components/SmoothScrollView';
-import {
-  BMI_NEXT_REVIEW_DATE,
-  BMI_READINGS,
-  BMI_TARGET,
-} from '@/constants/bmi';
+import { usePullToRefresh } from '@/hooks';
 import { useSidebarNavigation } from '@/hooks/useSidebarNavigation';
+import * as bmiApi from '@/services/crew/bmiApi';
+import type { BmiAttachment, BmiRagStatus, CrewBmiView } from '@/services/crew/bmiApi';
+
+// Download control for a reading's attachments. Downloads every file for that
+// reading in turn; shows a spinner while running and a tick when done.
+function BmiAttachmentCell({ attachments }: { attachments: BmiAttachment[] }) {
+  const [downloading, setDownloading] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
+
+  if (attachments.length === 0) {
+    return <Text style={styles.noAttachment}>—</Text>;
+  }
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      for (const attachment of attachments) {
+        await bmiApi.downloadBmiFile(attachment);
+      }
+      setDownloaded(true);
+      Alert.alert(
+        'Downloaded',
+        attachments.length === 1
+          ? `“${attachments[0].originalName}” was saved to your device${
+              Platform.OS === 'android' ? ' (Download folder)' : ' (Files app)'
+            }.`
+          : `${attachments.length} files were saved to your device${
+              Platform.OS === 'android' ? ' (Download folder)' : ' (Files app)'
+            }.`
+      );
+    } catch (err) {
+      console.error('[downloadBmiFile]', err);
+      Alert.alert(
+        'Download failed',
+        err instanceof Error ? err.message : 'Could not download the attachment.'
+      );
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <Pressable
+      style={styles.attachButton}
+      onPress={handleDownload}
+      disabled={downloading}
+      accessibilityLabel={`Download ${attachments.length} attachment${attachments.length > 1 ? 's' : ''}`}
+    >
+      {downloading ? (
+        <ActivityIndicator size="small" color="#12677A" />
+      ) : (
+        <Ionicons
+          name={downloaded ? 'checkmark-circle' : 'download-outline'}
+          size={18}
+          color={downloaded ? '#16A34A' : '#12677A'}
+        />
+      )}
+      {attachments.length > 1 && <Text style={styles.attachCount}>{attachments.length}</Text>}
+    </Pressable>
+  );
+}
+
+// RAG status -> the label + swatch colour the screen renders (matches the web
+// BMI_RAG_INDICATOR colours).
+const RAG_META: Record<BmiRagStatus, { label: string; color: string }> = {
+  green: { label: 'Healthy', color: '#65B33B' },
+  amber: { label: 'Review', color: '#E1D71C' },
+  red: { label: 'Action required', color: '#E60012' },
+};
+
+function formatDate(isoDate: string | null): string {
+  if (!isoDate) return '—';
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+}
 
 export default function MyBmiScreen() {
   const router = useRouter();
@@ -19,17 +101,49 @@ export default function MyBmiScreen() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState('');
 
-  const filteredReadings = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) return BMI_READINGS;
+  const [view, setView] = useState<CrewBmiView | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-    return BMI_READINGS.filter(
-      (reading) =>
-        reading.date.includes(normalizedQuery) ||
-        reading.bmi.includes(normalizedQuery) ||
-        reading.statusLabel.toLowerCase().includes(normalizedQuery)
-    );
-  }, [query]);
+  const loadBmi = useCallback(async () => {
+    try {
+      const data = await bmiApi.getMyBmi();
+      setView(data);
+      setLoadError(null);
+    } catch (err) {
+      console.error('[getMyBmi]', err);
+      setLoadError(err instanceof Error ? err.message : 'Failed to load BMI history');
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setIsLoading(true);
+      await loadBmi();
+      if (active) setIsLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [loadBmi]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(loadBmi);
+
+  const filteredReadings = useMemo(() => {
+    const readings = view?.readings ?? [];
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return readings;
+
+    return readings.filter((reading) => {
+      const label = RAG_META[reading.status].label.toLowerCase();
+      return (
+        formatDate(reading.date).includes(normalizedQuery) ||
+        reading.bmi.toLowerCase().includes(normalizedQuery) ||
+        label.includes(normalizedQuery)
+      );
+    });
+  }, [view, query]);
 
   return (
     <View style={styles.container}>
@@ -41,6 +155,7 @@ export default function MyBmiScreen() {
       <SmoothScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<PullToRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <View style={styles.headerSection}>
           <Text style={styles.title}>1.8 My BMI</Text>
@@ -68,32 +183,48 @@ export default function MyBmiScreen() {
               </Text>
               <Text style={[styles.headerCell, styles.bmiCell]}>BMI</Text>
               <Text style={[styles.headerCell, styles.statusCell]}>Status</Text>
+              <Text style={[styles.headerCell, styles.attachmentCell]}>Attachment</Text>
             </View>
 
-            {filteredReadings.map((reading) => (
-              <View key={reading.id} style={styles.tableRow}>
-                <Text style={[styles.bodyCell, styles.dateCell]}>
-                  {reading.date}
-                </Text>
-                <Text style={[styles.bodyCell, styles.bmiCell]}>
-                  {reading.bmi}
-                </Text>
-                <View style={[styles.bodyCellContainer, styles.statusCell]}>
-                  <View
-                    style={[
-                      styles.statusIndicator,
-                      { backgroundColor: reading.statusColor },
-                    ]}
-                    accessibilityLabel={reading.statusLabel}
-                  />
-                </View>
-              </View>
-            ))}
-
-            {filteredReadings.length === 0 && (
+            {isLoading ? (
               <View style={styles.emptyRow}>
-                <Text style={styles.emptyText}>No BMI readings found</Text>
+                <ActivityIndicator color="#12677A" />
               </View>
+            ) : loadError ? (
+              <View style={styles.emptyRow}>
+                <Text style={styles.errorText}>{loadError}</Text>
+              </View>
+            ) : (
+              <>
+                {filteredReadings.map((reading) => {
+                  const meta = RAG_META[reading.status];
+                  return (
+                    <View key={reading.seq} style={styles.tableRow}>
+                      <Text style={[styles.bodyCell, styles.dateCell]}>
+                        {formatDate(reading.date)}
+                      </Text>
+                      <Text style={[styles.bodyCell, styles.bmiCell]}>
+                        {reading.bmi}
+                      </Text>
+                      <View style={[styles.bodyCellContainer, styles.statusCell]}>
+                        <View
+                          style={[styles.statusIndicator, { backgroundColor: meta.color }]}
+                          accessibilityLabel={meta.label}
+                        />
+                      </View>
+                      <View style={[styles.bodyCellContainer, styles.attachmentCell]}>
+                        <BmiAttachmentCell attachments={reading.attachments} />
+                      </View>
+                    </View>
+                  );
+                })}
+
+                {filteredReadings.length === 0 && (
+                  <View style={styles.emptyRow}>
+                    <Text style={styles.emptyText}>No BMI readings found</Text>
+                  </View>
+                )}
+              </>
             )}
           </View>
 
@@ -101,14 +232,14 @@ export default function MyBmiScreen() {
             <View style={styles.targetColumn}>
               <Text style={styles.summaryLabel}>My BMI Target</Text>
               <View style={styles.summaryCard}>
-                <Text style={styles.summaryValue}>{BMI_TARGET}</Text>
+                <Text style={styles.summaryValue}>{view?.targetBmi || '—'}</Text>
               </View>
             </View>
 
             <View style={styles.reviewColumn}>
               <Text style={styles.summaryLabel}>Next Review</Text>
               <View style={styles.summaryCard}>
-                <Text style={styles.summaryValue}>{BMI_NEXT_REVIEW_DATE}</Text>
+                <Text style={styles.summaryValue}>{formatDate(view?.nextReviewDate ?? null)}</Text>
               </View>
             </View>
           </View>
@@ -212,22 +343,41 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   dateCell: {
-    flex: 1.45,
+    flex: 1.3,
     borderRightWidth: 1,
     borderRightColor: '#D0D0D0',
   },
   bmiCell: {
-    flex: 1,
+    flex: 0.75,
     borderRightWidth: 1,
     borderRightColor: '#D0D0D0',
   },
   statusCell: {
-    flex: 0.95,
+    flex: 0.75,
+    borderRightWidth: 1,
+    borderRightColor: '#D0D0D0',
+  },
+  attachmentCell: {
+    flex: 1.1,
   },
   statusIndicator: {
     width: 20,
     height: 20,
     borderRadius: 2,
+  },
+  attachButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  attachCount: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#12677A',
+  },
+  noAttachment: {
+    color: '#999999',
+    fontSize: 15,
   },
   emptyRow: {
     paddingVertical: 18,
@@ -235,6 +385,10 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     color: '#737373',
+    fontSize: 14,
+  },
+  errorText: {
+    color: '#DC2626',
     fontSize: 14,
   },
   summaryRow: {
