@@ -1,42 +1,34 @@
 import { storage } from '@/utils/storage';
-import type { AuthSession, UserRole } from '@/store/slices/authSlice';
+import { clearTokens, setTokens } from '@/services/api/client';
+import type { StaffSession } from '@/store/slices/authSlice';
 
 const AUTH_SESSION_KEY = '@cpms/auth_session';
 
-const VALID_ROLES: UserRole[] = [
-  'cabin_crew',
-  'system_admin',
-  'performance_manager',
-  'super_user',
-];
-
-function isAuthSession(value: unknown): value is AuthSession {
+function isStaffSession(value: unknown): value is StaffSession {
   if (!value || typeof value !== 'object') return false;
 
-  const session = value as Partial<AuthSession>;
+  const session = value as Partial<StaffSession>;
   return Boolean(
-    session.user &&
-      typeof session.user.id === 'string' &&
-      typeof session.user.email === 'string' &&
-      typeof session.user.name === 'string' &&
-      typeof session.token === 'string' &&
-      session.selectedRole &&
-      VALID_ROLES.includes(session.selectedRole) &&
-      session.selectedStaff &&
-      typeof session.selectedStaff.id === 'string' &&
-      typeof session.selectedStaff.name === 'string'
+    typeof session.staffId === 'string' &&
+      typeof session.orgId === 'string' &&
+      typeof session.fullName === 'string' &&
+      typeof session.accessToken === 'string' &&
+      typeof session.refreshToken === 'string' &&
+      typeof session.actingAsStaff === 'boolean'
   );
 }
 
-export async function saveAuthSession(session: AuthSession): Promise<void> {
+export async function saveAuthSession(session: StaffSession): Promise<void> {
   await storage.set(AUTH_SESSION_KEY, session);
+  await setTokens(session.accessToken, session.refreshToken);
 }
 
-export async function getAuthSession(): Promise<AuthSession | null> {
+export async function getAuthSession(): Promise<StaffSession | null> {
   const session = await storage.get<unknown>(AUTH_SESSION_KEY);
-  return isAuthSession(session) ? session : null;
+  return isStaffSession(session) ? session : null;
 }
 
 export async function clearAuthSession(): Promise<void> {
   await storage.remove(AUTH_SESSION_KEY);
+  await clearTokens();
 }

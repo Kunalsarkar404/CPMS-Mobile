@@ -15,11 +15,13 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { useAppDispatch } from '@/hooks';
 import SmoothScrollView from '@/components/SmoothScrollView';
-import { setStaffSession } from '@/store/slices/authSlice';
-import { saveAuthSession } from '@/services/auth/session';
+import { setPmAuth } from '@/store/slices/authSlice';
+import { setTokens } from '@/services/api/client';
 import * as authApi from '@/services/auth/authApi';
 
-export default function LoginScreen() {
+const PERFORMANCE_MANAGER_ROLE_ID = 'PERFORMANCE_MANAGER';
+
+export default function ManagerLoginScreen() {
   const router = useRouter();
   const dispatch = useAppDispatch();
   const [staffId, setStaffId] = useState('');
@@ -33,19 +35,37 @@ export default function LoginScreen() {
     setError(null);
     setIsSubmitting(true);
     try {
-      const result = await authApi.login(staffId.trim(), password);
-      const session = {
-        staffId: result.staff.staffId,
-        orgId: result.staff.orgId,
-        fullName: result.staff.fullName,
-        accessToken: result.tokens.accessToken,
-        refreshToken: result.tokens.refreshToken,
-        actingAsStaff: false,
-        managerContext: null,
-      };
-      await saveAuthSession(session);
-      dispatch(setStaffSession(session));
-      router.replace('/(tabs)');
+      const result = await authApi.managerLogin(staffId.trim(), password);
+
+      let tokens = result.tokens;
+      if (!tokens) {
+        const roles = result.roles ?? [];
+        const hasPerformanceManagerRole = roles.some(
+          (role) => role.roleId === PERFORMANCE_MANAGER_ROLE_ID
+        );
+        if (!hasPerformanceManagerRole) {
+          setError("This account can't be used on this app");
+          setIsSubmitting(false);
+          return;
+        }
+        tokens = await authApi.selectRoleAfterLogin(
+          result.user.userId,
+          result.user.orgId,
+          PERFORMANCE_MANAGER_ROLE_ID
+        );
+      }
+
+      await setTokens(tokens.accessToken, tokens.refreshToken);
+      dispatch(
+        setPmAuth({
+          userId: result.user.userId,
+          orgId: result.user.orgId,
+          email: result.user.email,
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
+        })
+      );
+      router.push('/(auth)/staff-search');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -75,7 +95,7 @@ export default function LoginScreen() {
         </View>
 
         <View style={styles.titleSection}>
-          <Text style={styles.title}>Welcome Back</Text>
+          <Text style={styles.title}>Performance Manager Login</Text>
         </View>
 
         <View style={styles.formSection}>
@@ -83,7 +103,7 @@ export default function LoginScreen() {
             <Text style={styles.label}>Staff ID</Text>
             <TextInput
               style={styles.input}
-              placeholder="e.g. CP2203"
+              placeholder="e.g. CP1001"
               placeholderTextColor="#9CA3AF"
               autoCapitalize="characters"
               autoComplete="off"
@@ -111,9 +131,6 @@ export default function LoginScreen() {
               value={password}
               onChangeText={setPassword}
             />
-            <Pressable style={styles.forgotPassword}>
-              <Text style={styles.forgotPasswordText}>Forgot Password</Text>
-            </Pressable>
           </View>
 
           {error && <Text style={styles.errorText}>{error}</Text>}
@@ -136,13 +153,8 @@ export default function LoginScreen() {
             )}
           </Pressable>
 
-          <Pressable
-            style={styles.managerLink}
-            onPress={() => router.push('/(auth)/manager-login')}
-          >
-            <Text style={styles.managerLinkText}>
-              Performance Manager? Sign in here
-            </Text>
+          <Pressable style={styles.crewLink} onPress={() => router.back()}>
+            <Text style={styles.crewLinkText}>Cabin Crew? Sign in here</Text>
           </Pressable>
         </View>
       </SmoothScrollView>
@@ -227,15 +239,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
-  forgotPassword: {
-    alignSelf: 'flex-end',
-    marginTop: 8,
-  },
-  forgotPasswordText: {
-    color: '#2563EB',
+  errorText: {
+    color: '#DC2626',
     fontSize: 14,
-    fontWeight: '500',
-    textDecorationLine: 'underline',
   },
   buttonSection: {
     paddingHorizontal: 20,
@@ -259,15 +265,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 18,
   },
-  errorText: {
-    color: '#DC2626',
-    fontSize: 14,
-  },
-  managerLink: {
+  crewLink: {
     marginTop: 20,
     alignItems: 'center',
   },
-  managerLinkText: {
+  crewLinkText: {
     color: '#2563EB',
     fontSize: 14,
     fontWeight: '500',

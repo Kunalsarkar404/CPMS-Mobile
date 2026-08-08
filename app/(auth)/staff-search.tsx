@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -7,29 +7,29 @@ import {
   Pressable,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
   StyleSheet,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
-import { useAppDispatch } from '@/hooks';
-import { setSelectedStaff } from '@/store/slices/authSlice';
-import { MOCK_STAFF, type StaffMember } from '@/constants/staff';
+import * as crewApi from '@/services/crew/crewApi';
+import type { ManagedStaffMember } from '@/services/crew/crewApi';
 
-function StaffDetails({ staff }: { staff: StaffMember }) {
+function StaffDetails({ staff }: { staff: ManagedStaffMember }) {
   return (
     <View style={styles.staffDetailsRow}>
       <View style={styles.staffDetailColumn}>
         <Text style={styles.staffDetailLabel}>Staff ID:</Text>
-        <Text style={styles.staffDetailValue}>{staff.id}</Text>
+        <Text style={styles.staffDetailValue}>{staff.StaffId}</Text>
       </View>
       <View style={styles.staffDetailColumn}>
         <Text style={styles.staffDetailLabel}>Nationality:</Text>
-        <Text style={styles.staffDetailValue}>{staff.nationality}</Text>
+        <Text style={styles.staffDetailValue}>{staff.PrimaryNationality}</Text>
       </View>
       <View style={styles.staffDetailColumn}>
         <Text style={styles.staffDetailLabel}>Grade:</Text>
-        <Text style={styles.staffDetailValue}>{staff.grade}</Text>
+        <Text style={styles.staffDetailValue}>{staff.CurrentGrade}</Text>
       </View>
     </View>
   );
@@ -37,21 +37,49 @@ function StaffDetails({ staff }: { staff: StaffMember }) {
 
 export default function StaffSearchScreen() {
   const router = useRouter();
-  const dispatch = useAppDispatch();
   const [query, setQuery] = useState('');
+  const [staffList, setStaffList] = useState<ManagedStaffMember[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      try {
+        const data = await crewApi.getManagedStaff();
+        if (active) setStaffList(data);
+      } catch (err) {
+        if (active) setError(err instanceof Error ? err.message : 'Failed to load staff');
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const filteredStaff = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return MOCK_STAFF;
-    return MOCK_STAFF.filter(
+    if (!q) return staffList;
+    return staffList.filter(
       (s) =>
-        s.name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)
+        s.Full_Name.toLowerCase().includes(q) || s.StaffId.toLowerCase().includes(q)
     );
-  }, [query]);
+  }, [query, staffList]);
 
-  const handleSelectStaff = (staff: StaffMember) => {
-    dispatch(setSelectedStaff(staff));
-    router.push('/(auth)/login-behalf');
+  const handleSelectStaff = (staff: ManagedStaffMember) => {
+    router.push({
+      pathname: '/(auth)/login-behalf',
+      params: {
+        staffId: staff.StaffId,
+        fullName: staff.Full_Name,
+        nationality: staff.PrimaryNationality,
+        grade: staff.CurrentGrade,
+      },
+    });
   };
 
   return (
@@ -88,31 +116,42 @@ export default function StaffSearchScreen() {
       </View>
 
       <View style={styles.listSection}>
-        <View style={styles.listContainer}>
-          <FlatList
-            data={filteredStaff}
-            keyExtractor={(item) => item.id}
-            ItemSeparatorComponent={() => <View style={styles.separator} />}
-            renderItem={({ item }) => (
-              <Pressable
-                style={({ pressed }) => [
-                  styles.listItem,
-                  pressed && styles.listItemPressed,
-                ]}
-                onPress={() => handleSelectStaff(item)}
-              >
-                <Text style={styles.staffName}>{item.name}</Text>
-                <StaffDetails staff={item} />
-              </Pressable>
-            )}
-            ListEmptyComponent={
-              <View style={styles.emptyState}>
-                <Ionicons name="search-outline" size={48} color="#D1D5DB" />
-                <Text style={styles.emptyStateText}>No staff found</Text>
-              </View>
-            }
-          />
-        </View>
+        {isLoading ? (
+          <View style={styles.emptyState}>
+            <ActivityIndicator color="#5B8C3E" />
+          </View>
+        ) : error ? (
+          <View style={styles.emptyState}>
+            <Ionicons name="alert-circle-outline" size={48} color="#DC2626" />
+            <Text style={styles.emptyStateText}>{error}</Text>
+          </View>
+        ) : (
+          <View style={styles.listContainer}>
+            <FlatList
+              data={filteredStaff}
+              keyExtractor={(item) => item.StaffId}
+              ItemSeparatorComponent={() => <View style={styles.separator} />}
+              renderItem={({ item }) => (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.listItem,
+                    pressed && styles.listItemPressed,
+                  ]}
+                  onPress={() => handleSelectStaff(item)}
+                >
+                  <Text style={styles.staffName}>{item.Full_Name}</Text>
+                  <StaffDetails staff={item} />
+                </Pressable>
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyState}>
+                  <Ionicons name="search-outline" size={48} color="#D1D5DB" />
+                  <Text style={styles.emptyStateText}>No staff found</Text>
+                </View>
+              }
+            />
+          </View>
+        )}
       </View>
     </KeyboardAvoidingView>
   );
@@ -221,5 +260,7 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     marginTop: 12,
     fontSize: 16,
+    textAlign: 'center',
+    paddingHorizontal: 20,
   },
 });

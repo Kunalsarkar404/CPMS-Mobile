@@ -46,14 +46,14 @@ const MOCK_REWARDS: Reward[] = [
 
 export default function RewardsScreen() {
   const router = useRouter();
-  const { selectedStaff } = useAppSelector((state) => state.auth);
+  const { staffSession } = useAppSelector((state) => state.auth);
   const { handleSidebarItem } = useSidebarNavigation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [year] = useState('2026');
 
-  const staffLabel = selectedStaff
-    ? `${selectedStaff.id} | ${selectedStaff.name}`
+  const staffLabel = staffSession
+    ? `${staffSession.staffId} | ${staffSession.fullName}`
     : 'CP 5785 | Jacob Taylor';
 
   const filteredRewards = useMemo(() => {

@@ -10,7 +10,7 @@ import { useSidebarNavigation } from '@/hooks/useSidebarNavigation';
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const { selectedStaff } = useAppSelector((state) => state.auth);
+  const { staffSession } = useAppSelector((state) => state.auth);
   const { handleSidebarItem } = useSidebarNavigation();
   const [query, setQuery] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -38,16 +38,13 @@ export default function DashboardScreen() {
           />
         </View>
 
-        {selectedStaff && (
+        {staffSession && (
           <View style={styles.staffCard}>
             <Text style={styles.staffLabel}>Logged in as</Text>
             <Text style={styles.staffName}>
-              {selectedStaff.name}
+              {staffSession.fullName}
             </Text>
-            <Text style={styles.staffMeta}>
-              {selectedStaff.id} · {selectedStaff.grade} ·{' '}
-              {selectedStaff.nationality}
-            </Text>
+            <Text style={styles.staffMeta}>{staffSession.staffId}</Text>
           </View>
         )}
       </View>

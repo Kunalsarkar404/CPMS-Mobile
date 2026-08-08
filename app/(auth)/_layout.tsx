@@ -13,7 +13,7 @@ export default function AuthLayout() {
     >
       <Stack.Screen name="index" />
       <Stack.Screen name="login" />
-      <Stack.Screen name="role-select" />
+      <Stack.Screen name="manager-login" />
       <Stack.Screen name="staff-search" />
       <Stack.Screen name="login-behalf" />
     </Stack>

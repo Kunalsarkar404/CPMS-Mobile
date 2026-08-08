@@ -1,41 +1,38 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
-import type { StaffMember } from '@/constants/staff';
-
-export type UserRole =
-  | 'cabin_crew'
-  | 'system_admin'
-  | 'performance_manager'
-  | 'super_user';
-
-export interface User {
-  id: string;
+// Transient — alive only between a performance manager's own login and
+// picking which staff member to act as. Cleared once a StaffSession is set.
+export interface PmAuth {
+  userId: string;
+  orgId: string;
   email: string;
-  name: string;
+  accessToken: string;
+  refreshToken: string;
 }
 
-export interface AuthSession {
-  user: User;
-  token: string;
-  selectedRole: UserRole;
-  selectedStaff: StaffMember;
+// What the app actually operates as once inside /(tabs) — the same shape
+// whether it came from a direct crew login or a PM logging in on behalf of staff.
+export interface StaffSession {
+  staffId: string;
+  orgId: string;
+  fullName: string;
+  accessToken: string;
+  refreshToken: string;
+  actingAsStaff: boolean;
+  managerContext: { userId: string; email: string } | null;
 }
 
 interface AuthState {
-  user: User | null;
-  token: string | null;
-  selectedRole: UserRole | null;
-  selectedStaff: StaffMember | null;
+  pmAuth: PmAuth | null;
+  staffSession: StaffSession | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   error: string | null;
 }
 
 const initialState: AuthState = {
-  user: null,
-  token: null,
-  selectedRole: null,
-  selectedStaff: null,
+  pmAuth: null,
+  staffSession: null,
   isAuthenticated: false,
   isLoading: false,
   error: null,
@@ -48,36 +45,20 @@ const authSlice = createSlice({
     setLoading: (state, action: PayloadAction<boolean>) => {
       state.isLoading = action.payload;
     },
-    setUser: (state, action: PayloadAction<{ user: User; token: string }>) => {
-      state.user = action.payload.user;
-      state.token = action.payload.token;
-      state.selectedRole = null;
-      state.selectedStaff = null;
-      state.isAuthenticated = false;
+    setPmAuth: (state, action: PayloadAction<PmAuth>) => {
+      state.pmAuth = action.payload;
       state.isLoading = false;
       state.error = null;
     },
-    setSelectedRole: (state, action: PayloadAction<UserRole>) => {
-      state.selectedRole = action.payload;
+    setStaffSession: (state, action: PayloadAction<StaffSession>) => {
+      state.staffSession = action.payload;
+      state.pmAuth = null;
+      state.isAuthenticated = true;
+      state.isLoading = false;
+      state.error = null;
     },
-    setSelectedStaff: (state, action: PayloadAction<StaffMember>) => {
-      state.selectedStaff = action.payload;
-    },
-    completeSignIn: (state) => {
-      if (
-        state.user &&
-        state.token &&
-        state.selectedRole &&
-        state.selectedStaff
-      ) {
-        state.isAuthenticated = true;
-      }
-    },
-    restoreSession: (state, action: PayloadAction<AuthSession>) => {
-      state.user = action.payload.user;
-      state.token = action.payload.token;
-      state.selectedRole = action.payload.selectedRole;
-      state.selectedStaff = action.payload.selectedStaff;
+    restoreSession: (state, action: PayloadAction<StaffSession>) => {
+      state.staffSession = action.payload;
       state.isAuthenticated = true;
       state.isLoading = false;
       state.error = null;
@@ -87,10 +68,8 @@ const authSlice = createSlice({
       state.isLoading = false;
     },
     logout: (state) => {
-      state.user = null;
-      state.token = null;
-      state.selectedRole = null;
-      state.selectedStaff = null;
+      state.pmAuth = null;
+      state.staffSession = null;
       state.isAuthenticated = false;
       state.isLoading = false;
       state.error = null;
@@ -103,10 +82,8 @@ const authSlice = createSlice({
 
 export const {
   setLoading,
-  setUser,
-  setSelectedRole,
-  setSelectedStaff,
-  completeSignIn,
+  setPmAuth,
+  setStaffSession,
   restoreSession,
   setError,
   logout,

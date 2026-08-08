@@ -7,7 +7,7 @@ import { setThemeMode } from '@/store/slices/appSlice';
 export default function SettingsScreen() {
   const dispatch = useAppDispatch();
   const { themeMode } = useAppSelector((state) => state.app);
-  const { isAuthenticated, user } = useAppSelector((state) => state.auth);
+  const { isAuthenticated, staffSession } = useAppSelector((state) => state.auth);
 
   const isDarkMode = themeMode === 'dark';
 
@@ -19,20 +19,20 @@ export default function SettingsScreen() {
         </Text>
       </View>
 
-      {isAuthenticated && user && (
+      {isAuthenticated && staffSession && (
         <View style={[styles.userCard, isDarkMode && styles.userCardDark]}>
           <View style={styles.userRow}>
             <View style={styles.avatar}>
               <Text style={styles.avatarText}>
-                {user.name.charAt(0).toUpperCase()}
+                {staffSession.fullName.charAt(0).toUpperCase()}
               </Text>
             </View>
             <View>
               <Text style={[styles.userName, isDarkMode && styles.userNameDark]}>
-                {user.name}
+                {staffSession.fullName}
               </Text>
               <Text style={[styles.userEmail, isDarkMode && styles.userEmailDark]}>
-                {user.email}
+                {staffSession.staffId}
               </Text>
             </View>
           </View>

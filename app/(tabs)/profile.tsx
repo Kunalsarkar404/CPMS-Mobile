@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   View,
   Text,
   Pressable,
+  ActivityIndicator,
   StyleSheet,
   type StyleProp,
   type ViewStyle,
@@ -22,6 +23,18 @@ import {
 } from '@/services/notifications';
 import { clearAuthSession } from '@/services/auth/session';
 import { logout } from '@/store/slices/authSlice';
+import * as crewApi from '@/services/crew/crewApi';
+import type { StaffProfile } from '@/services/crew/crewApi';
+import * as authApi from '@/services/auth/authApi';
+import type { LineManager } from '@/services/auth/authApi';
+
+function formatDate(isoDate: string): string {
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return '—';
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  return `${day}-${month}-${d.getFullYear()}`;
+}
 
 interface ProfileFieldProps {
   label: string;
@@ -68,17 +81,53 @@ function ManagerCard({ name, designation, contact }: ManagerCardProps) {
 export default function ProfileScreen() {
   const router = useRouter();
   const dispatch = useAppDispatch();
-  const { selectedStaff } = useAppSelector((state) => state.auth);
+  const { staffSession } = useAppSelector((state) => state.auth);
   const { handleSidebarItem } = useSidebarNavigation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [logoutVisible, setLogoutVisible] = useState(false);
+  const [staffProfile, setStaffProfile] = useState<StaffProfile | null>(null);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [lineManager, setLineManager] = useState<LineManager | null>(null);
+  const [isLoadingManager, setIsLoadingManager] = useState(true);
+
+  useEffect(() => {
+    if (!staffSession) return;
+    let active = true;
+
+    (async () => {
+      try {
+        const data = await crewApi.getStaffById(staffSession.staffId);
+        if (active) setStaffProfile(data);
+      } catch (err) {
+        if (active) setProfileError(err instanceof Error ? err.message : 'Failed to load profile');
+      } finally {
+        if (active) setIsLoadingProfile(false);
+      }
+    })();
+
+    (async () => {
+      try {
+        const manager = await authApi.getLineManager();
+        if (active) setLineManager(manager);
+      } catch {
+        // no line manager assigned, or lookup failed — section just stays empty
+      } finally {
+        if (active) setIsLoadingManager(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [staffSession]);
 
   const profile = {
-    name: selectedStaff?.name ?? 'Rohan Gupta',
-    staffId: selectedStaff?.id ?? 'CP1234',
-    grade: selectedStaff?.grade ?? 'CS',
-    nationality: selectedStaff?.nationality ?? 'Indian',
-    dateOfJoining: '05-09-2023',
+    name: staffProfile?.Full_Name ?? staffSession?.fullName ?? '',
+    staffId: staffProfile?.StaffId ?? staffSession?.staffId ?? '',
+    grade: staffProfile?.CurrentGrade ?? '—',
+    nationality: staffProfile?.PrimaryNationality ?? '—',
+    dateOfJoining: staffProfile?.DOJ ? formatDate(staffProfile.DOJ) : '—',
   };
 
   const handleLogout = () => {
@@ -109,6 +158,15 @@ export default function ProfileScreen() {
 
         <View style={styles.detailsSection}>
           <Text style={styles.sectionTitle}>Profile Details</Text>
+
+          {isLoadingProfile && (
+            <ActivityIndicator style={styles.fieldSpacing} color="#1A5276" />
+          )}
+          {profileError && (
+            <Text style={[styles.fieldLabel, styles.fieldSpacing, styles.errorText]}>
+              {profileError}
+            </Text>
+          )}
 
           <View style={styles.avatarContainer}>
             <Avatar name={profile.name} size="xl" />
@@ -145,16 +203,19 @@ export default function ProfileScreen() {
             Your Managers at Salam Air
           </Text>
 
-          <ManagerCard
-            name="Akif Hussain"
-            designation="Chief Officer"
-            contact="123-46-789"
-          />
-          <ManagerCard
-            name="Michael Smith"
-            designation="Training Manager"
-            contact="123-46-789"
-          />
+          {isLoadingManager && <ActivityIndicator color="#1A5276" />}
+
+          {!isLoadingManager && lineManager && (
+            <ManagerCard
+              name={lineManager.name}
+              designation={lineManager.designation ?? '—'}
+              contact={lineManager.email ?? lineManager.phone ?? '—'}
+            />
+          )}
+
+          {!isLoadingManager && !lineManager && (
+            <Text style={styles.fieldLabel}>No line manager assigned</Text>
+          )}
         </View>
 
         <View style={styles.logoutSection}>
@@ -248,6 +309,9 @@ const styles = StyleSheet.create({
   },
   fieldSpacing: {
     marginBottom: 16,
+  },
+  errorText: {
+    color: '#DC2626',
   },
   rowFields: {
     flexDirection: 'row',

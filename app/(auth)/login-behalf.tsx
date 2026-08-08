@@ -1,31 +1,53 @@
-import { View, Text, Pressable, StyleSheet } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useState } from 'react';
+import { View, Text, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import { useAppDispatch, useAppSelector } from '@/hooks';
 import { saveAuthSession } from '@/services/auth/session';
-import { completeSignIn } from '@/store/slices/authSlice';
+import { setStaffSession } from '@/store/slices/authSlice';
+import * as authApi from '@/services/auth/authApi';
 
 export default function LoginBehalfScreen() {
   const router = useRouter();
   const dispatch = useAppDispatch();
-  const { user, token, selectedRole, selectedStaff } = useAppSelector(
-    (state) => state.auth
-  );
+  const pmAuth = useAppSelector((state) => state.auth.pmAuth);
+  const params = useLocalSearchParams<{
+    staffId: string;
+    fullName: string;
+    nationality: string;
+    grade: string;
+  }>();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const hasSelection = Boolean(pmAuth && params.staffId && params.fullName);
 
   const handleContinue = async () => {
-    if (!user || !token || !selectedRole || !selectedStaff) return;
-
-    await saveAuthSession({
-      user,
-      token,
-      selectedRole,
-      selectedStaff,
-    });
-    dispatch(completeSignIn());
-    router.replace('/(tabs)');
+    if (!pmAuth || !params.staffId) return;
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      const result = await authApi.loginAsStaff(params.staffId);
+      const session = {
+        staffId: result.staff.staffId,
+        orgId: result.staff.orgId,
+        fullName: result.staff.fullName,
+        accessToken: result.tokens.accessToken,
+        refreshToken: result.tokens.refreshToken,
+        actingAsStaff: true,
+        managerContext: { userId: pmAuth.userId, email: pmAuth.email },
+      };
+      await saveAuthSession(session);
+      dispatch(setStaffSession(session));
+      router.replace('/(tabs)');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to log in as this staff member');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  if (!user || !token || !selectedRole || !selectedStaff) {
+  if (!hasSelection) {
     return (
       <View style={styles.emptyContainer}>
         <Text style={styles.emptyText}>Sign-in details are incomplete</Text>
@@ -52,24 +74,26 @@ export default function LoginBehalfScreen() {
         </Text>
 
         <View style={styles.staffCard}>
-          <Text style={styles.staffName}>{selectedStaff.name}</Text>
+          <Text style={styles.staffName}>{params.fullName}</Text>
           <View style={styles.staffDetailsRow}>
             <View style={styles.staffDetailColumn}>
               <Text style={styles.staffDetailLabel}>Staff ID:</Text>
-              <Text style={styles.staffDetailValue}>{selectedStaff.id}</Text>
+              <Text style={styles.staffDetailValue}>{params.staffId}</Text>
             </View>
             <View style={styles.staffDetailColumn}>
               <Text style={styles.staffDetailLabel}>Nationality:</Text>
               <Text style={styles.staffDetailValue}>
-                {selectedStaff.nationality}
+                {params.nationality}
               </Text>
             </View>
             <View style={styles.staffDetailColumn}>
               <Text style={styles.staffDetailLabel}>Grade:</Text>
-              <Text style={styles.staffDetailValue}>{selectedStaff.grade}</Text>
+              <Text style={styles.staffDetailValue}>{params.grade}</Text>
             </View>
           </View>
         </View>
+
+        {error && <Text style={styles.errorText}>{error}</Text>}
       </View>
 
       <View style={styles.buttonSection}>
@@ -77,10 +101,16 @@ export default function LoginBehalfScreen() {
           style={({ pressed }) => [
             styles.continueButton,
             pressed && styles.continueButtonPressed,
+            isSubmitting && styles.continueButtonDisabled,
           ]}
           onPress={handleContinue}
+          disabled={isSubmitting}
         >
-          <Text style={styles.continueButtonText}>Continue</Text>
+          {isSubmitting ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.continueButtonText}>Continue</Text>
+          )}
         </Pressable>
       </View>
     </View>
@@ -170,6 +200,12 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#111827',
   },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 14,
+    marginTop: 16,
+    textAlign: 'center',
+  },
   buttonSection: {
     paddingHorizontal: 20,
     paddingBottom: 40,
@@ -182,6 +218,9 @@ const styles = StyleSheet.create({
   },
   continueButtonPressed: {
     backgroundColor: '#4A7332',
+  },
+  continueButtonDisabled: {
+    opacity: 0.7,
   },
   continueButtonText: {
     color: '#fff',
