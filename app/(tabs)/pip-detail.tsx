@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
   Pressable,
   TextInput,
-  Alert,
+  ActivityIndicator,
   StyleSheet,
   type ViewStyle,
 } from 'react-native';
@@ -13,31 +13,190 @@ import { Ionicons } from '@expo/vector-icons';
 
 import AppHeader from '@/components/AppHeader';
 import ErrorState from '@/components/ErrorState';
+import PullToRefreshControl from '@/components/PullToRefreshControl';
 import SmoothScrollView from '@/components/SmoothScrollView';
 import Sidebar from '@/components/Sidebar';
 import AppraisalAccordion from '@/components/AppraisalAccordion';
+import RichTextView from '@/components/RichTextView';
+import { usePullToRefresh } from '@/hooks';
 import { useSidebarNavigation } from '@/hooks/useSidebarNavigation';
-import { getPipById } from '@/constants/pip';
+import * as pipApi from '@/services/crew/pipApi';
+import type { CrewPip, CrewPipObjective, CrewPipReviewTask, PipAttachment } from '@/services/crew/pipApi';
 
-type PipTab = 'details' | 'objectives';
+type PipTab = 'details' | 'objectives' | 'reviews';
+
+function formatDate(isoDate: string | null): string {
+  if (!isoDate) return '—';
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+}
+
+function isPipClosed(pip: CrewPip): boolean {
+  return (pip.PIPStatus || '').toLowerCase() === 'closed';
+}
+
+// Mirrors PipManager.jsx's isReviewTaskClosed/isReviewTaskDelayed exactly —
+// closed always wins over "delayed" even if TargetDate is in the past.
+function isReviewDelayed(task: CrewPipReviewTask): boolean {
+  const isClosed = (task.Task_Status ?? '').toUpperCase() === 'CLOSED';
+  return !isClosed && !!task.TargetDate && new Date(task.TargetDate) < new Date(new Date().setHours(0, 0, 0, 0));
+}
 
 function DetailField({
   label,
   value,
   multiline = false,
+  richText = false,
   style,
 }: {
   label: string;
   value: string;
   multiline?: boolean;
+  richText?: boolean;
   style?: ViewStyle;
 }) {
   return (
     <View style={style}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <View style={[styles.fieldBox, multiline && styles.fieldBoxMultiline]}>
-        <Text style={styles.fieldValue}>{value}</Text>
+        {richText ? (
+          <RichTextView html={value} style={styles.fieldValue} />
+        ) : (
+          <Text style={styles.fieldValue}>{value}</Text>
+        )}
       </View>
+    </View>
+  );
+}
+
+function AttachmentRow({ attachment }: { attachment: PipAttachment }) {
+  const [downloading, setDownloading] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    setError(null);
+    try {
+      await pipApi.downloadPipFile(attachment);
+      setDownloaded(true);
+    } catch (err) {
+      console.error('[downloadPipFile]', err);
+      setError(err instanceof Error ? err.message : 'Failed to download');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <View>
+      <Pressable style={styles.attachmentChip} onPress={handleDownload} disabled={downloading}>
+        {downloading ? (
+          <ActivityIndicator size="small" color="#374151" />
+        ) : (
+          <Ionicons name={downloaded ? 'checkmark-circle' : 'download-outline'} size={16} color={downloaded ? '#16A34A' : '#374151'} />
+        )}
+        <Text style={styles.attachmentChipText} numberOfLines={1}>
+          {attachment.originalName}
+        </Text>
+      </Pressable>
+      {error && <Text style={styles.errorText}>{error}</Text>}
+    </View>
+  );
+}
+
+function ObjectiveCard({ objective, editable, onSave }: {
+  objective: CrewPipObjective;
+  editable: boolean;
+  onSave: (crewStatement: string) => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(objective.Crew_Statement);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const startEdit = () => {
+    setDraft(objective.Crew_Statement);
+    setError(null);
+    setEditing(true);
+  };
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      await onSave(draft);
+      setEditing(false);
+    } catch (err) {
+      console.error('[updateMyPipObjective]', err);
+      setError(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <View style={styles.objectiveBlock}>
+      <Pressable style={styles.objectiveHeader} onPress={() => setExpanded((v) => !v)}>
+        <Text style={styles.objectiveTitle} numberOfLines={2}>
+          {objective.Obj_Improvement_Obj || 'Objective'}
+        </Text>
+        <Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={18} color="#2C5271" />
+      </Pressable>
+
+      {expanded && (
+        <>
+          <AppraisalAccordion title="Improvement Objective" expanded onToggle={() => {}}>
+            <Text style={styles.bodyText}>{objective.Obj_Improvement_Obj || '—'}</Text>
+          </AppraisalAccordion>
+
+          <AppraisalAccordion title="Success Criteria" expanded onToggle={() => {}}>
+            <Text style={styles.bodyText}>{objective.Success_Criteria || '—'}</Text>
+          </AppraisalAccordion>
+
+          {!!objective.SupportRequired && (
+            <AppraisalAccordion title="Support Required" expanded onToggle={() => {}}>
+              <Text style={styles.bodyText}>{objective.SupportRequired}</Text>
+            </AppraisalAccordion>
+          )}
+
+          <AppraisalAccordion
+            title="Crew Statement"
+            expanded
+            onToggle={() => {}}
+            onEdit={editable && !editing ? startEdit : undefined}
+          >
+            {editing ? (
+              <View>
+                <TextInput
+                  style={styles.editInput}
+                  multiline
+                  textAlignVertical="top"
+                  value={draft}
+                  onChangeText={setDraft}
+                />
+                {error && <Text style={styles.errorText}>{error}</Text>}
+                <View style={styles.editActions}>
+                  <Pressable style={styles.cancelButton} onPress={() => setEditing(false)} disabled={isSaving}>
+                    <Text style={styles.cancelButtonText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable style={styles.saveButton} onPress={handleSave} disabled={isSaving}>
+                    {isSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>Save</Text>}
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              <Text style={styles.bodyText}>{objective.Crew_Statement || 'No statement yet.'}</Text>
+            )}
+          </AppraisalAccordion>
+
+          <AppraisalAccordion title="Appraiser Statement" expanded onToggle={() => {}}>
+            <Text style={styles.bodyText}>{objective.Appraiser_Statement || 'No statement yet.'}</Text>
+          </AppraisalAccordion>
+        </>
+      )}
     </View>
   );
 }
@@ -48,24 +207,76 @@ export default function PipDetailScreen() {
   const { handleSidebarItem } = useSidebarNavigation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<PipTab>('details');
-  const [expandedObjectives, setExpandedObjectives] = useState<
-    Record<string, boolean>
-  >({ 'obj-1': true, 'obj-2': true });
-  const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>(
-    {}
-  );
-  const [editingKey, setEditingKey] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState('');
 
-  const pip = useMemo(() => getPipById(id ?? ''), [id]);
+  const [pip, setPip] = useState<CrewPip | null>(null);
+  const [objectives, setObjectives] = useState<CrewPipObjective[]>([]);
+  const [reviewTasks, setReviewTasks] = useState<CrewPipReviewTask[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
 
-  if (!pip) {
+  const loadPip = useCallback(async () => {
+    if (!id) {
+      setNotFound(true);
+      return;
+    }
+    try {
+      const pips = await pipApi.getMyPips();
+      const match = pips.find((p) => p.PIP_id === id);
+      if (!match) {
+        setNotFound(true);
+        return;
+      }
+      setPip(match);
+      setNotFound(false);
+
+      const [objectivesRes, reviewsRes] = await Promise.all([
+        pipApi.getMyPipObjectives(id),
+        pipApi.getMyPipReviewTasks(id),
+      ]);
+      setObjectives(objectivesRes);
+      setReviewTasks(reviewsRes);
+    } catch (err) {
+      console.error('[loadPip]', err);
+      setNotFound(true);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setIsLoading(true);
+      await loadPip();
+      if (active) setIsLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [loadPip]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(loadPip);
+
+  const handleSaveObjective = async (objectiveId: string, crewStatement: string) => {
+    if (!id) return;
+    const updated = await pipApi.updateMyPipObjective(id, objectiveId, crewStatement);
+    setObjectives((prev) => prev.map((o) => (o.ObjectiveID === updated.ObjectiveID ? updated : o)));
+  };
+
+  if (isLoading) {
     return (
       <View style={styles.screen}>
-        <AppHeader
-          onMenuPress={() => setSidebarOpen(true)}
-          onProfilePress={() => router.push('/(tabs)/profile')}
-        />
+        <AppHeader onMenuPress={() => setSidebarOpen(true)} onProfilePress={() => router.push('/(tabs)/profile')} />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator color="#005C70" />
+        </View>
+        <Sidebar visible={sidebarOpen} onClose={() => setSidebarOpen(false)} activeItemId="1.4" onItemPress={handleSidebarItem} />
+      </View>
+    );
+  }
+
+  if (!pip || notFound) {
+    return (
+      <View style={styles.screen}>
+        <AppHeader onMenuPress={() => setSidebarOpen(true)} onProfilePress={() => router.push('/(tabs)/profile')} />
         <ErrorState
           fullScreen
           title="PIP not found"
@@ -73,60 +284,24 @@ export default function PipDetailScreen() {
           onRetry={() => router.back()}
           retryLabel="Go Back"
         />
-        <Sidebar
-          visible={sidebarOpen}
-          onClose={() => setSidebarOpen(false)}
-          activeItemId="1.4"
-          onItemPress={handleSidebarItem}
-        />
+        <Sidebar visible={sidebarOpen} onClose={() => setSidebarOpen(false)} activeItemId="1.4" onItemPress={handleSidebarItem} />
       </View>
     );
   }
 
-  const statusLabel = pip.status === 'open' ? 'Open' : 'Closed';
-
-  const toggleObjective = (objectiveId: string) => {
-    setExpandedObjectives((prev) => ({
-      ...prev,
-      [objectiveId]: !prev[objectiveId],
-    }));
-  };
-
-  const isCardExpanded = (key: string) => expandedCards[key] !== false;
-
-  const toggleCard = (key: string) => {
-    setExpandedCards((prev) => ({
-      ...prev,
-      [key]: !(prev[key] !== false),
-    }));
-  };
-
-  const startEdit = (key: string, current: string) => {
-    setEditingKey(key);
-    setEditDraft(current);
-  };
-
-  const saveEdit = () => {
-    setEditingKey(null);
-    Alert.alert('Saved', 'Comments updated.');
-  };
+  const statusLabel = isPipClosed(pip) ? 'Closed' : 'Open';
 
   return (
     <View style={styles.screen}>
-      <AppHeader
-        onMenuPress={() => setSidebarOpen(true)}
-        onProfilePress={() => router.push('/(tabs)/profile')}
-      />
+      <AppHeader onMenuPress={() => setSidebarOpen(true)} onProfilePress={() => router.push('/(tabs)/profile')} />
 
       <SmoothScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<PullToRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <View style={styles.content}>
-          <Pressable
-            style={styles.backButton}
-            onPress={() => router.back()}
-          >
+          <Pressable style={styles.backButton} onPress={() => router.back()}>
             <View style={styles.backIconBox}>
               <Ionicons name="chevron-back" size={18} color="#6B7280" />
             </View>
@@ -134,35 +309,26 @@ export default function PipDetailScreen() {
           </Pressable>
 
           <Text style={styles.title}>
-            {pip.code} - {statusLabel}
+            {pip.PIP_TYPENAME || pip.PIP_id} - {statusLabel}
           </Text>
-          <Text style={styles.subtitle}>
-            Next Action Date: {pip.nextActionDate}
-          </Text>
+          <Text style={styles.subtitle}>Next Action Date: {formatDate(pip.TargetDate)}</Text>
 
           <View style={styles.tabRow}>
             {(
               [
                 { id: 'details', label: 'PIP Details' },
                 { id: 'objectives', label: 'PIP Objectives' },
+                { id: 'reviews', label: 'Reviews' },
               ] as const
             ).map((tab) => {
               const isActive = activeTab === tab.id;
               return (
                 <Pressable
                   key={tab.id}
-                  style={[
-                    styles.tab,
-                    isActive ? styles.tabActive : styles.tabInactive,
-                  ]}
+                  style={[styles.tab, isActive ? styles.tabActive : styles.tabInactive]}
                   onPress={() => setActiveTab(tab.id)}
                 >
-                  <Text
-                    style={[
-                      styles.tabText,
-                      isActive ? styles.tabTextActive : styles.tabTextInactive,
-                    ]}
-                  >
+                  <Text style={[styles.tabText, isActive ? styles.tabTextActive : styles.tabTextInactive]}>
                     {tab.label}
                   </Text>
                 </Pressable>
@@ -174,196 +340,104 @@ export default function PipDetailScreen() {
             <View style={styles.detailsCard}>
               <Text style={styles.detailsHeading}>PIP Details</Text>
 
-              <DetailField
-                label="OPS Code"
-                value={pip.opsCode}
-                style={styles.fieldSpacing}
-              />
-
               <View style={styles.fieldRow}>
-                <DetailField
-                  label="Type"
-                  value={pip.type}
-                  style={styles.fieldFlex}
-                />
-                <DetailField
-                  label="Appraisal Year"
-                  value={pip.appraisalYear}
-                  style={styles.fieldFlex}
-                />
+                <DetailField label="PIP Type" value={pip.PIP_TYPE} style={styles.fieldFlex} />
+                <DetailField label="Appraisal Year" value={pip.Appraisal_year} style={styles.fieldFlex} />
               </View>
 
               <DetailField
                 label="Description of the under performance"
-                value={pip.underPerformanceDescription}
+                value={pip.Desc_underperformance || ''}
                 multiline
+                richText
                 style={styles.fieldSpacing}
               />
 
               <View style={styles.fieldRow}>
-                <DetailField
-                  label="PIP Start Date (First Instance)"
-                  value={pip.startDateFirst}
-                  style={styles.fieldFlex}
-                />
-                <DetailField
-                  label="PIP Start Date (Second Instance)"
-                  value={pip.startDateSecond}
-                  style={styles.fieldFlex}
-                />
+                <DetailField label="Start Date" value={formatDate(pip.Start_Date)} style={styles.fieldFlex} />
+                <DetailField label="End Date" value={formatDate(pip.End_Date)} style={styles.fieldFlex} />
               </View>
 
               <DetailField
                 label="Aim of the performance improvement plan"
-                value={pip.aim}
+                value={pip.AIM_PIP || ''}
                 multiline
+                richText
                 style={styles.fieldSpacing}
               />
 
+              <View style={styles.fieldRow}>
+                <DetailField label="Status" value={statusLabel} style={styles.fieldFlex} />
+                <DetailField label="Target Date" value={formatDate(pip.TargetDate)} style={styles.fieldFlex} />
+              </View>
+
               <DetailField
-                label="Status"
-                value={statusLabel}
+                label="PIP Owner"
+                value={pip.OwnerName || pip.PIP_Owner_StaffId || '—'}
                 style={styles.fieldSpacing}
               />
-              <DetailField label="PIP Owner" value={pip.owner} />
+
+              {isPipClosed(pip) && (
+                <>
+                  <DetailField label="Closed By" value={pip.PIP_ClosedBy || '—'} style={styles.fieldSpacing} />
+                  <DetailField label="Closure Comments" value={pip.PIP_Closure_Comments || '—'} multiline />
+                </>
+              )}
+
+              {pip.Attachments.length > 0 && (
+                <View style={styles.attachmentSection}>
+                  <Text style={styles.fieldLabel}>Attachments</Text>
+                  <View style={styles.attachmentList}>
+                    {pip.Attachments.map((a) => (
+                      <AttachmentRow key={a.fileName} attachment={a} />
+                    ))}
+                  </View>
+                </View>
+              )}
             </View>
           )}
 
           {activeTab === 'objectives' && (
             <>
-              <Pressable style={styles.attachmentButton}>
-                <Ionicons name="attach" size={16} color="#6B7280" />
-                <Text style={styles.attachmentText}>Attachment</Text>
-              </Pressable>
+              {objectives.length === 0 ? (
+                <Text style={styles.naText}>No objectives set for this PIP yet.</Text>
+              ) : (
+                objectives.map((objective) => (
+                  <ObjectiveCard
+                    key={objective.ObjectiveID}
+                    objective={objective}
+                    editable={!isPipClosed(pip)}
+                    onSave={(crewStatement) => handleSaveObjective(objective.ObjectiveID, crewStatement)}
+                  />
+                ))
+              )}
+            </>
+          )}
 
-              {pip.objectives.map((objective) => {
-                const isOpen = expandedObjectives[objective.id] !== false;
-                const crewKey = `${objective.id}-crew`;
-                const isEditing = editingKey === crewKey;
-
-                return (
-                  <View key={objective.id} style={styles.objectiveBlock}>
-                    <Pressable
-                      style={styles.objectiveHeader}
-                      onPress={() => toggleObjective(objective.id)}
-                    >
-                      <Text style={styles.objectiveTitle}>
-                        {objective.title}
-                      </Text>
-                      <Ionicons
-                        name={isOpen ? 'chevron-down' : 'chevron-forward'}
-                        size={18}
-                        color="#2C5271"
-                      />
-                    </Pressable>
-
-                    {isOpen && (
-                      <>
-                        <AppraisalAccordion
-                          title="Improvement Objectives"
-                          expanded={isCardExpanded(`${objective.id}-imp`)}
-                          onToggle={() => toggleCard(`${objective.id}-imp`)}
-                        >
-                          <Text style={styles.bodyText}>
-                            {objective.improvementObjectives}
-                          </Text>
-                        </AppraisalAccordion>
-
-                        <AppraisalAccordion
-                          title="Success Criteria"
-                          expanded={isCardExpanded(`${objective.id}-success`)}
-                          onToggle={() =>
-                            toggleCard(`${objective.id}-success`)
-                          }
-                        >
-                          <Text style={styles.bodyText}>
-                            {objective.successCriteria}
-                          </Text>
-                        </AppraisalAccordion>
-
-                        <AppraisalAccordion
-                          title={
-                            objective.id === 'obj-2'
-                              ? 'Appraise Comments (Crew)'
-                              : 'Crew Comments'
-                          }
-                          expanded={isCardExpanded(crewKey)}
-                          onToggle={() => toggleCard(crewKey)}
-                          onEdit={
-                            isEditing
-                              ? undefined
-                              : () =>
-                                  startEdit(crewKey, objective.crewComments)
-                          }
-                        >
-                          {isEditing ? (
-                            <View>
-                              <TextInput
-                                style={styles.editInput}
-                                multiline
-                                textAlignVertical="top"
-                                value={editDraft}
-                                onChangeText={setEditDraft}
-                              />
-                              <View style={styles.editActions}>
-                                <Pressable
-                                  style={styles.cancelButton}
-                                  onPress={() => setEditingKey(null)}
-                                >
-                                  <Text style={styles.cancelButtonText}>
-                                    Cancel
-                                  </Text>
-                                </Pressable>
-                                <Pressable
-                                  style={styles.saveButton}
-                                  onPress={saveEdit}
-                                >
-                                  <Text style={styles.saveButtonText}>
-                                    Save
-                                  </Text>
-                                </Pressable>
-                              </View>
-                            </View>
-                          ) : (
-                            <Text style={styles.bodyText}>
-                              {objective.crewComments}
-                            </Text>
-                          )}
-                        </AppraisalAccordion>
-
-                        <AppraisalAccordion
-                          title={
-                            objective.id === 'obj-2'
-                              ? 'Appraise Comments'
-                              : 'Appraiser Comments'
-                          }
-                          expanded={isCardExpanded(
-                            `${objective.id}-appraiser`
-                          )}
-                          onToggle={() =>
-                            toggleCard(`${objective.id}-appraiser`)
-                          }
-                        >
-                          <Text style={styles.bodyText}>
-                            {objective.appraiserComments}
-                          </Text>
-                        </AppraisalAccordion>
-                      </>
-                    )}
+          {activeTab === 'reviews' && (
+            <>
+              {reviewTasks.length === 0 ? (
+                <Text style={styles.naText}>No reviews scheduled for this PIP yet.</Text>
+              ) : (
+                reviewTasks.map((task) => (
+                  <View key={`${task.TaskId}-${task.TaskTypeId}-${task.TaskOwnerUserId}`} style={styles.reviewRow}>
+                    <View style={styles.reviewRowMain}>
+                      <Text style={styles.reviewDate}>{formatDate(task.TargetDate)}</Text>
+                      <Text style={styles.reviewStatus}>{task.Task_Status || '—'}</Text>
+                    </View>
+                    <Text style={styles.reviewOwnerLine}>
+                      Owner: {task.OwnerName || 'Unknown'} ({task.VAR3 || '—'})
+                    </Text>
+                    {isReviewDelayed(task) && <Text style={styles.reviewDelayed}>Delayed</Text>}
                   </View>
-                );
-              })}
+                ))
+              )}
             </>
           )}
         </View>
       </SmoothScrollView>
 
-      <Sidebar
-        visible={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-        activeItemId="1.4"
-        onItemPress={handleSidebarItem}
-      />
+      <Sidebar visible={sidebarOpen} onClose={() => setSidebarOpen(false)} activeItemId="1.4" onItemPress={handleSidebarItem} />
     </View>
   );
 }
@@ -372,6 +446,11 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: '#F5F5F5',
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   scrollView: {
     flex: 1,
@@ -415,12 +494,13 @@ const styles = StyleSheet.create({
   },
   tabRow: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 8,
     marginBottom: 16,
   },
   tab: {
     flex: 1,
     paddingVertical: 10,
+    paddingHorizontal: 4,
     borderRadius: 8,
     borderWidth: 1,
     alignItems: 'center',
@@ -434,7 +514,7 @@ const styles = StyleSheet.create({
     borderColor: '#D1D5DB',
   },
   tabText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
   tabTextActive: {
@@ -487,22 +567,27 @@ const styles = StyleSheet.create({
   fieldFlex: {
     flex: 1,
   },
-  attachmentButton: {
+  attachmentSection: {
+    marginTop: 4,
+  },
+  attachmentList: {
+    gap: 8,
+  },
+  attachmentChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
+    backgroundColor: '#F9FAFB',
     borderWidth: 1,
-    borderColor: '#D1D5DB',
+    borderColor: '#E5E7EB',
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: '#fff',
-    marginBottom: 16,
   },
-  attachmentText: {
+  attachmentChipText: {
     marginLeft: 8,
     fontSize: 14,
     color: '#374151',
+    flexShrink: 1,
   },
   objectiveBlock: {
     marginBottom: 16,
@@ -514,9 +599,11 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   objectiveTitle: {
+    flex: 1,
     fontSize: 16,
     fontWeight: '700',
     color: '#2C5271',
+    marginRight: 8,
   },
   bodyText: {
     fontSize: 14,
@@ -561,5 +648,49 @@ const styles = StyleSheet.create({
   saveButtonText: {
     color: '#fff',
     fontWeight: '600',
+  },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 14,
+    marginTop: 8,
+  },
+  naText: {
+    fontSize: 14,
+    color: '#9CA3AF',
+  },
+  reviewOwnerLine: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#6B7280',
+  },
+  reviewRow: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  reviewRowMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  reviewDate: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  reviewStatus: {
+    fontSize: 13,
+    color: '#6B7280',
+  },
+  reviewDelayed: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#DC2626',
   },
 });

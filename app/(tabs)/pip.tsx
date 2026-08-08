@@ -1,40 +1,85 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
   TextInput,
   Pressable,
+  ActivityIndicator,
   StyleSheet,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import AppHeader from '@/components/AppHeader';
+import PullToRefreshControl from '@/components/PullToRefreshControl';
 import SmoothScrollView from '@/components/SmoothScrollView';
 import Sidebar from '@/components/Sidebar';
+import { usePullToRefresh } from '@/hooks';
 import { useSidebarNavigation } from '@/hooks/useSidebarNavigation';
-import { MOCK_PIPS, type PipStatus } from '@/constants/pip';
+import * as pipApi from '@/services/crew/pipApi';
+import type { CrewPip } from '@/services/crew/pipApi';
+
+type PipStatusFilter = 'open' | 'closed';
+
+function formatDate(isoDate: string | null): string {
+  if (!isoDate) return '—';
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+}
+
+function isPipClosed(pip: CrewPip): boolean {
+  return (pip.PIPStatus || '').toLowerCase() === 'closed';
+}
 
 export default function PipListScreen() {
   const router = useRouter();
   const { handleSidebarItem } = useSidebarNavigation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<PipStatus>('open');
-  const [year] = useState('2026');
+  const [statusFilter, setStatusFilter] = useState<PipStatusFilter>('open');
+
+  const [pips, setPips] = useState<CrewPip[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const loadPips = useCallback(async () => {
+    try {
+      const data = await pipApi.getMyPips();
+      setPips(data);
+      setLoadError(null);
+    } catch (err) {
+      console.error('[getMyPips]', err);
+      setLoadError(err instanceof Error ? err.message : 'Failed to load PIPs');
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setIsLoading(true);
+      await loadPips();
+      if (active) setIsLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [loadPips]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(loadPips);
 
   const filteredPips = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return MOCK_PIPS.filter((pip) => {
-      const matchesStatus = pip.status === statusFilter;
-      const matchesYear = pip.appraisalYear === year || statusFilter === 'closed';
+    return pips.filter((pip) => {
+      const closed = isPipClosed(pip);
+      const matchesStatus = statusFilter === 'closed' ? closed : !closed;
       const matchesQuery =
         !q ||
-        pip.code.toLowerCase().includes(q) ||
-        pip.nextActionDate.includes(q);
-      return matchesStatus && matchesQuery && (statusFilter === 'open' ? matchesYear : true);
+        (pip.PIP_TYPENAME ?? '').toLowerCase().includes(q) ||
+        (pip.PIP_id ?? '').toLowerCase().includes(q);
+      return matchesStatus && matchesQuery;
     });
-  }, [query, statusFilter, year]);
+  }, [pips, query, statusFilter]);
 
   return (
     <View style={styles.screen}>
@@ -46,11 +91,10 @@ export default function PipListScreen() {
       <SmoothScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<PullToRefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         <View style={styles.content}>
-          <Text style={styles.heading}>
-            1.4 Crew Self Service - PIP
-          </Text>
+          <Text style={styles.heading}>1.4 Crew Self Service - PIP</Text>
 
           <View style={styles.searchRow}>
             <Ionicons name="search" size={18} color="#9CA3AF" />
@@ -64,7 +108,7 @@ export default function PipListScreen() {
           </View>
 
           <View style={styles.statusFilterRow}>
-            {(['open', 'closed'] as PipStatus[]).map((status) => {
+            {(['open', 'closed'] as PipStatusFilter[]).map((status) => {
               const selected = statusFilter === status;
               return (
                 <Pressable
@@ -93,45 +137,42 @@ export default function PipListScreen() {
             })}
           </View>
 
-          <View style={styles.listHeader}>
-            <Text style={styles.listTitle}>
-              List of {statusFilter === 'open' ? 'Open' : 'Closed'} PIP&apos;s
-            </Text>
-            <Pressable style={styles.yearButton}>
-              <Text style={styles.yearButtonText}>{year}</Text>
-              <Ionicons name="chevron-down" size={14} color="#4B5563" />
-            </Pressable>
-          </View>
+          <Text style={styles.listTitle}>
+            List of {statusFilter === 'open' ? 'Open' : 'Closed'} PIP&apos;s
+          </Text>
 
-          {filteredPips.map((pip) => (
-            <Pressable
-              key={pip.id}
-              style={({ pressed }) => [
-                styles.pipCard,
-                pressed && styles.pipCardPressed,
-              ]}
-              onPress={() =>
-                router.push({
-                  pathname: '/(tabs)/pip-detail',
-                  params: { id: pip.id },
-                })
-              }
-            >
-              <View style={styles.pipCardContent}>
-                <Text style={styles.pipCode}>{pip.code}</Text>
-                <Text style={styles.pipDate}>
-                  Next Action Date: {pip.nextActionDate}
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
-            </Pressable>
-          ))}
+          {isLoading ? (
+            <ActivityIndicator style={styles.loadingIndicator} color="#2C5271" />
+          ) : loadError ? (
+            <Text style={styles.errorText}>{loadError}</Text>
+          ) : (
+            <>
+              {filteredPips.map((pip) => (
+                <Pressable
+                  key={pip.PIP_id}
+                  style={({ pressed }) => [styles.pipCard, pressed && styles.pipCardPressed]}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/(tabs)/pip-detail',
+                      params: { id: pip.PIP_id },
+                    })
+                  }
+                >
+                  <View style={styles.pipCardContent}>
+                    <Text style={styles.pipCode}>{pip.PIP_TYPENAME || pip.PIP_id}</Text>
+                    <Text style={styles.pipDate}>Next Action Date: {formatDate(pip.TargetDate)}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                </Pressable>
+              ))}
 
-          {filteredPips.length === 0 && (
-            <View style={styles.emptyState}>
-              <Ionicons name="document-outline" size={48} color="#D1D5DB" />
-              <Text style={styles.emptyStateText}>No PIPs found</Text>
-            </View>
+              {filteredPips.length === 0 && (
+                <View style={styles.emptyState}>
+                  <Ionicons name="document-outline" size={48} color="#D1D5DB" />
+                  <Text style={styles.emptyStateText}>No PIPs found</Text>
+                </View>
+              )}
+            </>
           )}
         </View>
       </SmoothScrollView>
@@ -226,31 +267,18 @@ const styles = StyleSheet.create({
   statusLabelDefault: {
     color: '#4B5563',
   },
-  listHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
   listTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#2C5271',
+    marginBottom: 16,
   },
-  yearButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#D1D5DB',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#fff',
+  loadingIndicator: {
+    marginTop: 24,
   },
-  yearButtonText: {
+  errorText: {
+    color: '#DC2626',
     fontSize: 14,
-    color: '#1F2937',
-    marginRight: 4,
   },
   pipCard: {
     backgroundColor: '#fff',
