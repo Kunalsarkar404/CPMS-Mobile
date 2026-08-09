@@ -1,51 +1,55 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
   TextInput,
   Pressable,
+  ActivityIndicator,
   StyleSheet,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import AppHeader from '@/components/AppHeader';
+import PullToRefreshControl from '@/components/PullToRefreshControl';
 import SmoothScrollView from '@/components/SmoothScrollView';
 import Sidebar from '@/components/Sidebar';
 import TrendChart from '@/components/TrendChart';
+import { usePullToRefresh } from '@/hooks';
 import { useSidebarNavigation } from '@/hooks/useSidebarNavigation';
 import {
-  MOCK_FLIGHTS,
   MOCK_GIVE_FEEDBACK,
-  TREND_CATEGORIES,
-  TREND_OVERALL,
-  type FeedbackCategory,
   type GiveFeedbackStatus,
 } from '@/constants/feedback360';
+import * as threeSixtyApi from '@/services/crew/threeSixtyApi';
+import type {
+  MyThreeSixty,
+  ThreeSixtyFlight,
+  ThreeSixtyFlightCategory,
+  ThreeSixtyTrendCategory,
+} from '@/services/crew/threeSixtyApi';
 
 type Mode = 'view' | 'give';
 type SubView = 'flight' | 'trend';
-type GraphFilter =
-  | 'all'
-  | 'attitude'
-  | 'customer'
-  | 'compliance'
-  | 'punctuality';
+// 'all' or a KPI_ID.
+type GraphFilter = string;
 
-const GRAPH_FILTER_OPTIONS: { id: GraphFilter; label: string }[] = [
-  { id: 'all', label: 'Showing All' },
-  { id: 'attitude', label: 'Attitude & Leadership' },
-  { id: 'customer', label: 'Customer Focus' },
-  { id: 'compliance', label: 'Compliance' },
-  { id: 'punctuality', label: 'Punctuality' },
-];
+// Both the overall roll-up and each trend category expose these numeric fields.
+type RatingBoxData = Omit<ThreeSixtyTrendCategory, 'id' | 'title'>;
+
+function formatDate(isoDate: string | null): string {
+  if (!isoDate) return '—';
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+}
 
 function FlightCategoryCard({
   category,
   expanded,
   onToggle,
 }: {
-  category: FeedbackCategory;
+  category: ThreeSixtyFlightCategory;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -87,7 +91,7 @@ function FlightCategoryCard({
   );
 }
 
-function RatingStatBoxes({ category }: { category: FeedbackCategory }) {
+function RatingStatBoxes({ category }: { category: RatingBoxData }) {
   return (
     <View style={styles.ratingBoxRow}>
       <View style={styles.ratingBoxRed}>
@@ -132,7 +136,7 @@ function TrendCategoryCard({
   expanded,
   onToggle,
 }: {
-  category: FeedbackCategory;
+  category: ThreeSixtyTrendCategory;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -182,14 +186,11 @@ export default function Feedback360Screen() {
   const [giveStatus, setGiveStatus] = useState<GiveFeedbackStatus>('pending');
   const [giveYear] = useState('2026');
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    attitude: true,
-    discipline: true,
-    kpi3: true,
-    compliance: true,
-    productivity: true,
-    customer: true,
-  });
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  const [data, setData] = useState<MyThreeSixty | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (modeParam === 'give' || modeParam === 'view') {
@@ -197,16 +198,41 @@ export default function Feedback360Screen() {
     }
   }, [modeParam]);
 
-  const filteredFlights = useMemo(() => {
+  const loadThreeSixty = useCallback(async () => {
+    try {
+      const res = await threeSixtyApi.getMyThreeSixty();
+      setData(res);
+      setLoadError(null);
+    } catch (err) {
+      console.error('[getMyThreeSixty]', err);
+      setLoadError(err instanceof Error ? err.message : 'Failed to load 360 feedback');
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setIsLoading(true);
+      await loadThreeSixty();
+      if (active) setIsLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [loadThreeSixty]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(loadThreeSixty);
+
+  const filteredFlights = useMemo<ThreeSixtyFlight[]>(() => {
+    const flights = data?.flights ?? [];
     const q = query.trim().toLowerCase();
-    if (!q) return MOCK_FLIGHTS;
-    return MOCK_FLIGHTS.filter(
+    if (!q) return flights;
+    return flights.filter(
       (flight) =>
         flight.flightCode.toLowerCase().includes(q) ||
-        flight.date.includes(q) ||
-        flight.dateShort.toLowerCase().includes(q)
+        formatDate(flight.date).includes(q)
     );
-  }, [query]);
+  }, [data, query]);
 
   const giveFeedbackList = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -222,11 +248,22 @@ export default function Feedback360Screen() {
   }, [query, giveStatus]);
 
   const currentFlight =
-    filteredFlights[Math.min(flightIndex, filteredFlights.length - 1)] ??
-    MOCK_FLIGHTS[0];
+    filteredFlights[Math.min(flightIndex, filteredFlights.length - 1)];
+
+  const graphFilterOptions = useMemo(
+    () => [
+      { id: 'all', label: 'Showing All' },
+      ...(data?.categories ?? []).map((c) => ({ id: c.id, label: c.title })),
+    ],
+    [data]
+  );
   const graphFilterLabel =
-    GRAPH_FILTER_OPTIONS.find((option) => option.id === graphFilter)?.label ??
+    graphFilterOptions.find((option) => option.id === graphFilter)?.label ??
     'Showing All';
+  const chartMonths = useMemo(
+    () => (data?.trend.chart.months ?? []).map((m) => m.split(' ')[0]),
+    [data]
+  );
 
   const toggle = (key: string) => {
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -254,6 +291,11 @@ export default function Feedback360Screen() {
       <SmoothScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          mode === 'view' ? (
+            <PullToRefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          ) : undefined
+        }
       >
         <View style={styles.content}>
           <Text style={styles.heading}>
@@ -338,7 +380,18 @@ export default function Feedback360Screen() {
                 })}
               </View>
 
-              {subView === 'flight' && (
+              {isLoading ? (
+                <ActivityIndicator style={styles.loadingIndicator} color="#2C5271" />
+              ) : loadError ? (
+                <Text style={styles.errorText}>{loadError}</Text>
+              ) : (data?.flights.length ?? 0) === 0 ? (
+                <View style={styles.emptyState}>
+                  <Ionicons name="star-outline" size={48} color="#D1D5DB" />
+                  <Text style={styles.emptyStateText}>No 360 ratings found</Text>
+                </View>
+              ) : (
+                <>
+              {subView === 'flight' && currentFlight && (
                 <>
                   <Text style={styles.flightSectionTitle}>
                     Select a Flight, View Votes and Ratings
@@ -371,7 +424,7 @@ export default function Feedback360Screen() {
                           color="#6B7280"
                         />
                         <Text style={styles.flightDateText}>
-                          {currentFlight.date}
+                          {formatDate(currentFlight.date)}
                         </Text>
                         <Ionicons
                           name="airplane"
@@ -426,7 +479,7 @@ export default function Feedback360Screen() {
                           }}
                         >
                           <Text style={styles.flightDropdownDate}>
-                            {flight.dateShort}
+                            {formatDate(flight.date)}
                           </Text>
                           <Ionicons
                             name="airplane"
@@ -509,10 +562,10 @@ export default function Feedback360Screen() {
 
                   <View style={styles.overallCard}>
                     <Text style={styles.overallCardTitle}>Overall Rating</Text>
-                    <RatingStatBoxes category={TREND_OVERALL} />
+                    {data && <RatingStatBoxes category={data.trend.overall} />}
                   </View>
 
-                  {TREND_CATEGORIES.map((category) => (
+                  {(data?.trend.categories ?? []).map((category) => (
                     <TrendCategoryCard
                       key={category.id}
                       category={category}
@@ -546,7 +599,7 @@ export default function Feedback360Screen() {
 
                       {graphFilterOpen && (
                         <View style={styles.graphFilterMenu}>
-                          {GRAPH_FILTER_OPTIONS.map((option) => {
+                          {graphFilterOptions.map((option) => {
                             const isSelected = graphFilter === option.id;
                             return (
                               <Pressable
@@ -593,7 +646,11 @@ export default function Feedback360Screen() {
                     selectedSeriesId={
                       graphFilter === 'all' ? undefined : graphFilter
                     }
+                    months={chartMonths}
+                    series={data?.trend.chart.series}
                   />
+                </>
+              )}
                 </>
               )}
             </>
@@ -746,6 +803,13 @@ const styles = StyleSheet.create({
     marginLeft: 12,
     fontSize: 16,
     color: '#374151',
+  },
+  loadingIndicator: {
+    marginTop: 24,
+  },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 14,
   },
   modeFilterRow: {
     flexDirection: 'row',

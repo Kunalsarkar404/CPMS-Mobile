@@ -3,15 +3,33 @@ import Svg, { Line, Polyline, Circle, Text as SvgText } from 'react-native-svg';
 
 import { TREND_MONTHS, TREND_SERIES } from '@/constants/feedback360';
 
-interface TrendChartProps {
-  selectedSeriesId?: string;
+interface TrendSeries {
+  id: string;
+  label: string;
+  color?: string;
+  data: (number | null)[];
 }
 
-export default function TrendChart({ selectedSeriesId }: TrendChartProps) {
+interface TrendChartProps {
+  selectedSeriesId?: string;
+  // Real data (falls back to the mock constants when omitted). Series values may
+  // be null for months with no votes — those points are simply skipped.
+  months?: string[];
+  series?: TrendSeries[];
+}
+
+// Palette assigned by series index when real data doesn't carry its own colour.
+const SERIES_COLORS = ['#3B82F6', '#22C55E', '#A16207', '#A855F7', '#EF4444', '#0EA5E9'];
+
+export default function TrendChart({ selectedSeriesId, months, series }: TrendChartProps) {
   const { width: screenWidth } = useWindowDimensions();
+  const chartMonths = months && months.length ? months : TREND_MONTHS;
+  const allSeries: TrendSeries[] = (series && series.length ? series : TREND_SERIES).map(
+    (s, i) => ({ ...s, color: s.color ?? SERIES_COLORS[i % SERIES_COLORS.length] })
+  );
   const visibleSeries = selectedSeriesId
-    ? TREND_SERIES.filter((series) => series.id === selectedSeriesId)
-    : TREND_SERIES;
+    ? allSeries.filter((s) => s.id === selectedSeriesId)
+    : allSeries;
   const chartWidth = Math.max(screenWidth - 48, 280);
   const chartHeight = 200;
   const paddingLeft = 28;
@@ -24,7 +42,7 @@ export default function TrendChart({ selectedSeriesId }: TrendChartProps) {
   const minY = 0;
 
   const getX = (index: number) =>
-    paddingLeft + (index / (TREND_MONTHS.length - 1)) * plotWidth;
+    paddingLeft + (index / Math.max(1, chartMonths.length - 1)) * plotWidth;
 
   const getY = (value: number) =>
     paddingTop + ((maxY - value) / (maxY - minY)) * plotHeight;
@@ -60,37 +78,40 @@ export default function TrendChart({ selectedSeriesId }: TrendChartProps) {
           </SvgText>
         ))}
 
-        {visibleSeries.map((series) => {
-          const points = series.data
-            .map((value, index) => `${getX(index)},${getY(value)}`)
+        {visibleSeries.map((s) => {
+          const points = s.data
+            .map((value, index) => (value == null ? null : `${getX(index)},${getY(value)}`))
+            .filter((p): p is string => p !== null)
             .join(' ');
 
           return (
             <Polyline
-              key={series.id}
+              key={s.id}
               points={points}
               fill="none"
-              stroke={series.color}
+              stroke={s.color}
               strokeWidth={2}
             />
           );
         })}
 
-        {visibleSeries.map((series) =>
-          series.data.map((value, index) => (
-            <Circle
-              key={`${series.id}-${index}`}
-              cx={getX(index)}
-              cy={getY(value)}
-              r={3}
-              fill={series.color}
-            />
-          ))
+        {visibleSeries.map((s) =>
+          s.data.map((value, index) =>
+            value == null ? null : (
+              <Circle
+                key={`${s.id}-${index}`}
+                cx={getX(index)}
+                cy={getY(value)}
+                r={3}
+                fill={s.color}
+              />
+            )
+          )
         )}
 
-        {TREND_MONTHS.map((month, index) => (
+        {chartMonths.map((month, index) => (
           <SvgText
-            key={month}
+            key={`${month}-${index}`}
             x={getX(index)}
             y={chartHeight - 8}
             fontSize="10"

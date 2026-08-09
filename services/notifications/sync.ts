@@ -1,85 +1,93 @@
-import { BMI_NEXT_REVIEW_DATE } from '@/constants/bmi';
-import { MOCK_GIVE_FEEDBACK } from '@/constants/feedback360';
-import { MOCK_PIPS } from '@/constants/pip';
-import { MOCK_TASKS } from '@/constants/tasks';
+import * as bmiApi from '@/services/crew/bmiApi';
+import * as pipApi from '@/services/crew/pipApi';
+import { getMyTasks } from '@/services/performance/performanceApi';
+import { mapTaskToDisplay } from '@/services/performance/taskMapping';
 
-import { isPastOrToday, parseCpmsDate } from './dates';
+import { isPastOrToday } from './dates';
 import {
   notifyBmiReviewApproaching,
-  notifyPending360Feedback,
   notifyPipNextAction,
   notifyTaskDueApproaching,
   notifyTaskOverdue,
 } from './events';
 
 /**
- * Syncs date-driven local reminders from current app data.
- * Event-driven notifiers (appraisal, disciplinary, rewards, new task)
- * are not auto-fired here to avoid fake repeated events at startup.
+ * Syncs date-driven local reminders from the crew member's real data (tasks,
+ * PIPs, BMI) fetched from the backend. Runs once at startup after auth.
+ *
+ * Event-driven notifiers (appraisal, disciplinary, rewards, new task) are not
+ * auto-fired here to avoid fake repeated events at startup. The old "pending
+ * 360 feedback" reminder was dropped: Give-feedback has no backend, so there's
+ * no real source for it.
+ *
+ * Each source is fetched independently and wrapped so a failure (offline, an
+ * expired session, a 500) only skips that one reminder set rather than aborting
+ * notification initialization.
  */
 export async function syncLocalReminders(): Promise<void> {
-  await syncTaskDueReminders();
-  await syncPending360Reminders();
-  await syncPipNextActionReminders();
-  await syncBmiReviewReminder();
+  await Promise.all([
+    syncTaskDueReminders(),
+    syncPipNextActionReminders(),
+    syncBmiReviewReminder(),
+  ]);
+}
+
+function toValidDate(isoDate: string | null | undefined): Date | null {
+  if (!isoDate) return null;
+  const d = new Date(isoDate);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 async function syncTaskDueReminders(): Promise<void> {
-  const activeTasks = MOCK_TASKS.filter(
-    (task) => task.status === 'open' || task.status === 'pending'
-  );
+  try {
+    const tasks = await getMyTasks();
+    for (const task of tasks) {
+      const display = mapTaskToDisplay(task);
+      // Only remind on active tasks (current / delayed / future), never closed.
+      if (display.section === 'closed') continue;
 
-  for (const task of activeTasks) {
-    const dueDate = parseCpmsDate(task.actionDue);
-    if (!dueDate) continue;
+      const dueDate = toValidDate(task.TargetDate ?? task.NextActionDueDate);
+      if (!dueDate) continue;
 
-    if (isPastOrToday(dueDate) || task.section === 'delayed') {
-      await notifyTaskOverdue({
-        taskId: task.id,
-        title: task.title,
-        dueDate,
-      });
-      continue;
+      if (display.section === 'delayed' || isPastOrToday(dueDate)) {
+        await notifyTaskOverdue({ taskId: display.id, title: display.title, dueDate });
+      } else {
+        await notifyTaskDueApproaching({ taskId: display.id, title: display.title, dueDate });
+      }
     }
-
-    await notifyTaskDueApproaching({
-      taskId: task.id,
-      title: task.title,
-      dueDate,
-    });
-  }
-}
-
-async function syncPending360Reminders(): Promise<void> {
-  const pending = MOCK_GIVE_FEEDBACK.filter((item) => item.status === 'pending');
-
-  for (const item of pending) {
-    await notifyPending360Feedback({
-      feedbackId: item.id,
-      code: item.code,
-      dated: item.dated,
-    });
+  } catch (err) {
+    console.error('[notifications] task reminders sync failed', err);
   }
 }
 
 async function syncPipNextActionReminders(): Promise<void> {
-  const openPips = MOCK_PIPS.filter((pip) => pip.status === 'open');
+  try {
+    const pips = await pipApi.getMyPips();
+    for (const pip of pips) {
+      if ((pip.PIPStatus || '').toLowerCase() === 'closed') continue;
 
-  for (const pip of openPips) {
-    const nextActionDate = parseCpmsDate(pip.nextActionDate);
-    if (!nextActionDate) continue;
+      const nextActionDate = toValidDate(pip.TargetDate);
+      if (!nextActionDate) continue;
 
-    await notifyPipNextAction({
-      pipId: pip.id,
-      code: pip.code,
-      nextActionDate,
-    });
+      await notifyPipNextAction({
+        pipId: pip.PIP_id,
+        code: pip.PIP_TYPENAME || pip.PIP_id,
+        nextActionDate,
+      });
+    }
+  } catch (err) {
+    console.error('[notifications] PIP reminders sync failed', err);
   }
 }
 
 async function syncBmiReviewReminder(): Promise<void> {
-  const nextReviewDate = parseCpmsDate(BMI_NEXT_REVIEW_DATE);
-  if (!nextReviewDate) return;
+  try {
+    const bmi = await bmiApi.getMyBmi();
+    const nextReviewDate = toValidDate(bmi.nextReviewDate);
+    if (!nextReviewDate) return;
 
-  await notifyBmiReviewApproaching({ nextReviewDate });
+    await notifyBmiReviewApproaching({ nextReviewDate });
+  } catch (err) {
+    console.error('[notifications] BMI reminder sync failed', err);
+  }
 }
