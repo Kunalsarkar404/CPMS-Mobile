@@ -56,7 +56,8 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json}\"",
     "typecheck": "tsc --noEmit",
     "prebuild:android": "expo prebuild --platform android",
-    "build:apk": "cd android && ./gradlew assembleRelease && mkdir -p ../releases && cp app/build/outputs/apk/release/app-release.apk ../releases/CPMS-v1.0.0-release.apk"
+    "build:apk": "cd android && ./gradlew assembleRelease && mkdir -p ../releases && cp app/build/outputs/apk/release/app-release.apk ../releases/CPMS-v1.0.0-release.apk",
+    "build:apk:win": "cd android && gradlew.bat assembleRelease && cd .. && (if not exist releases mkdir releases) && copy /Y android\\app\\build\\outputs\\apk\\release\\app-release.apk releases\\CPMS-v1.0.0-release.apk"
   },
   "private": true,
   "overrides": {

@@ -23,7 +23,6 @@ export {
 } from './initialize';
 export { resolveNotificationDestination } from './routing';
 export { canUseNativeNotifications, getNotificationsModule } from './runtime';
-export { syncLocalReminders } from './sync';
 export {
   buildPushTokenRegistrationPayload,
   getExpoPushTokenReady,

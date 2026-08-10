@@ -3,14 +3,13 @@ import { Platform } from 'react-native';
 import { ensureNotificationChannels } from './channels';
 import { requestNotificationPermission } from './delivery';
 import { canUseNativeNotifications } from './runtime';
-import { syncLocalReminders } from './sync';
 import { preparePushTokenRegistration } from './token';
 
 let initialized = false;
 
 /**
- * Configures channels, requests permission, prepares push-token readiness,
- * and syncs local reminders. Safe to call multiple times.
+ * Configures channels, requests permission, and prepares push-token readiness.
+ * Safe to call multiple times. No local reminders are scheduled on login.
  */
 export async function initializeNotifications(): Promise<{
   permissionGranted: boolean;
@@ -39,7 +38,6 @@ export async function initializeNotifications(): Promise<{
       );
     }
 
-    await syncLocalReminders();
     initialized = true;
 
     return {
