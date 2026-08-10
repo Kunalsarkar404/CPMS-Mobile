@@ -62,8 +62,8 @@ export function updateMyTaskAttachments(
 // Uploads a locally-picked file to generic task storage and hands back an
 // identifier — mirrors the web app's pattern of uploading on selection, then
 // including the returned {fileName, originalName} in a later save call.
-export function uploadTaskFile(localUri: string, mimeType?: string): Promise<TaskAttachment> {
-  return uploadFile(`${API_BASE_URL}/performance/tasks/upload`, localUri, mimeType);
+export function uploadTaskFile(localUri: string, mimeType?: string, originalName?: string): Promise<TaskAttachment> {
+  return uploadFile(`${API_BASE_URL}/performance/tasks/upload`, localUri, mimeType, originalName);
 }
 
 // Downloads an already-attached file to the device (see services/api/fileTransfer.ts

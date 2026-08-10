@@ -118,7 +118,7 @@ function CrewCommentSection({
     setError(null);
     try {
       for (const asset of result.assets) {
-        const uploaded = await appraisalApi.uploadAppraisalFile(asset.uri, asset.mimeType ?? undefined);
+        const uploaded = await appraisalApi.uploadAppraisalFile(asset.uri, asset.mimeType ?? undefined, asset.name);
         setAttachments((prev) => [...prev, uploaded]);
       }
     } catch (err) {

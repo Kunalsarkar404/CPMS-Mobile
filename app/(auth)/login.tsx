@@ -9,6 +9,7 @@ import {
   Platform,
   StyleSheet,
   ActivityIndicator,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -27,6 +28,12 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Web only: on wide viewports lay the screen out as two columns (image on the
+  // left, form on the right). Native and narrow mobile-web keep the original
+  // stacked layout untouched.
+  const { width } = useWindowDimensions();
+  const isWideWeb = Platform.OS === 'web' && width >= 768;
 
   const handleLogin = async () => {
     if (!staffId.trim() || !password) return;
@@ -53,6 +60,114 @@ export default function LoginScreen() {
     }
   };
 
+  const titleBlock = (
+    <View style={styles.titleSection}>
+      <Text style={styles.title}>Welcome Back</Text>
+    </View>
+  );
+
+  const formBlock = (
+    <View style={styles.formSection}>
+      <View>
+        <Text style={styles.label}>Staff ID</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="e.g. CP2203"
+          placeholderTextColor="#9CA3AF"
+          autoCapitalize="characters"
+          autoComplete="off"
+          value={staffId}
+          onChangeText={setStaffId}
+        />
+      </View>
+
+      <View>
+        <View style={styles.passwordHeader}>
+          <Text style={styles.labelNoMargin}>Password</Text>
+          <Pressable onPress={() => setShowPassword(!showPassword)}>
+            <Ionicons
+              name={showPassword ? 'eye-outline' : 'eye-off-outline'}
+              size={22}
+              color="#6B7280"
+            />
+          </Pressable>
+        </View>
+        <TextInput
+          style={styles.input}
+          placeholder="Password"
+          placeholderTextColor="#9CA3AF"
+          secureTextEntry={!showPassword}
+          value={password}
+          onChangeText={setPassword}
+        />
+        <Pressable style={styles.forgotPassword}>
+          <Text style={styles.forgotPasswordText}>Forgot Password</Text>
+        </Pressable>
+      </View>
+
+      {error && <Text style={styles.errorText}>{error}</Text>}
+    </View>
+  );
+
+  const buttonBlock = (
+    <View style={styles.buttonSection}>
+      <Pressable
+        style={({ pressed }) => [
+          styles.loginButton,
+          pressed && styles.loginButtonPressed,
+          isSubmitting && styles.loginButtonDisabled,
+        ]}
+        onPress={handleLogin}
+        disabled={isSubmitting}
+      >
+        {isSubmitting ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.loginButtonText}>Login</Text>
+        )}
+      </Pressable>
+
+      <Pressable
+        style={styles.managerLink}
+        onPress={() => router.push('/(auth)/manager-login')}
+      >
+        <Text style={styles.managerLinkText}>
+          Performance Manager? Sign in here
+        </Text>
+      </Pressable>
+    </View>
+  );
+
+  if (isWideWeb) {
+    return (
+      <View style={styles.webRoot}>
+        <View style={styles.webImagePane}>
+          <Image
+            source={require('../../assets/images/airplane.png')}
+            style={styles.webImageFull}
+            resizeMode="cover"
+          />
+        </View>
+        <KeyboardAvoidingView style={styles.webFormPane}>
+          <SmoothScrollView
+            style={styles.scrollView}
+            contentContainerStyle={styles.webFormScrollContent}
+            bounces={false}
+          >
+            <View style={styles.webFormInner}>
+              <View style={styles.webLogoHeader}>
+                <Text style={styles.logo}>LOGO</Text>
+              </View>
+              {titleBlock}
+              {formBlock}
+              {buttonBlock}
+            </View>
+          </SmoothScrollView>
+        </KeyboardAvoidingView>
+      </View>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -74,77 +189,9 @@ export default function LoginScreen() {
           </View>
         </View>
 
-        <View style={styles.titleSection}>
-          <Text style={styles.title}>Welcome Back</Text>
-        </View>
-
-        <View style={styles.formSection}>
-          <View>
-            <Text style={styles.label}>Staff ID</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. CP2203"
-              placeholderTextColor="#9CA3AF"
-              autoCapitalize="characters"
-              autoComplete="off"
-              value={staffId}
-              onChangeText={setStaffId}
-            />
-          </View>
-
-          <View>
-            <View style={styles.passwordHeader}>
-              <Text style={styles.labelNoMargin}>Password</Text>
-              <Pressable onPress={() => setShowPassword(!showPassword)}>
-                <Ionicons
-                  name={showPassword ? 'eye-outline' : 'eye-off-outline'}
-                  size={22}
-                  color="#6B7280"
-                />
-              </Pressable>
-            </View>
-            <TextInput
-              style={styles.input}
-              placeholder="Password"
-              placeholderTextColor="#9CA3AF"
-              secureTextEntry={!showPassword}
-              value={password}
-              onChangeText={setPassword}
-            />
-            <Pressable style={styles.forgotPassword}>
-              <Text style={styles.forgotPasswordText}>Forgot Password</Text>
-            </Pressable>
-          </View>
-
-          {error && <Text style={styles.errorText}>{error}</Text>}
-        </View>
-
-        <View style={styles.buttonSection}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.loginButton,
-              pressed && styles.loginButtonPressed,
-              isSubmitting && styles.loginButtonDisabled,
-            ]}
-            onPress={handleLogin}
-            disabled={isSubmitting}
-          >
-            {isSubmitting ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.loginButtonText}>Login</Text>
-            )}
-          </Pressable>
-
-          <Pressable
-            style={styles.managerLink}
-            onPress={() => router.push('/(auth)/manager-login')}
-          >
-            <Text style={styles.managerLinkText}>
-              Performance Manager? Sign in here
-            </Text>
-          </Pressable>
-        </View>
+        {titleBlock}
+        {formBlock}
+        {buttonBlock}
       </SmoothScrollView>
     </KeyboardAvoidingView>
   );
@@ -157,6 +204,38 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
+  },
+  // Web wide-screen two-column layout (image left, form right).
+  webRoot: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+  },
+  webImagePane: {
+    flex: 1,
+    backgroundColor: '#F3F4F6',
+  },
+  webImageFull: {
+    width: '100%',
+    height: '100%',
+  },
+  webFormPane: {
+    flex: 1,
+    backgroundColor: '#fff',
+  },
+  webFormScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingVertical: 48,
+  },
+  webFormInner: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 40,
+  },
+  webLogoHeader: {
+    paddingBottom: 8,
   },
   header: {
     paddingHorizontal: 20,

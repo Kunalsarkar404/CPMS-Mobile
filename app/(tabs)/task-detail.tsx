@@ -97,7 +97,7 @@ export default function TaskDetailScreen() {
     setSubmitError(null);
     try {
       for (const asset of result.assets) {
-        const uploaded = await performanceApi.uploadTaskFile(asset.uri, asset.mimeType ?? undefined);
+        const uploaded = await performanceApi.uploadTaskFile(asset.uri, asset.mimeType ?? undefined, asset.name);
         setAttachments((prev) => [...prev, uploaded]);
       }
     } catch (err) {

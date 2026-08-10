@@ -24,7 +24,16 @@ async function authHeader(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export async function uploadFile(uploadUrl: string, localUri: string, mimeType?: string): Promise<FileAttachment> {
+// `_originalName` is unused on native — the expo-file-system `File` derives the
+// multipart filename from the local path itself. It exists only to keep this
+// signature identical to the web override (fileTransfer.web.ts), which needs it
+// because a browser blob URL carries no filename.
+export async function uploadFile(
+  uploadUrl: string,
+  localUri: string,
+  mimeType?: string,
+  _originalName?: string
+): Promise<FileAttachment> {
   const file = new File(localUri);
 
   const attempt = () =>

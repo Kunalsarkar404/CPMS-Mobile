@@ -94,8 +94,8 @@ export function getAppraisalCycle(appraisalYear: string): Promise<AppraisalCycle
   return apiRequest<AppraisalCycleFlags>(`/crew/appraisal-cycle/${encodeURIComponent(appraisalYear)}`);
 }
 
-export function uploadAppraisalFile(localUri: string, mimeType?: string): Promise<AppraisalAttachment> {
-  return uploadFile(`${API_BASE_URL}/crew/appraisal/upload`, localUri, mimeType);
+export function uploadAppraisalFile(localUri: string, mimeType?: string, originalName?: string): Promise<AppraisalAttachment> {
+  return uploadFile(`${API_BASE_URL}/crew/appraisal/upload`, localUri, mimeType, originalName);
 }
 
 export function downloadAppraisalFile(attachment: AppraisalAttachment): Promise<string> {
